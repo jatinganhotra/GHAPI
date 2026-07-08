@@ -1,0 +1,16 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+*.log
+
+# DuckDB snapshots (crawl-expansion-202607): generated locally by
+# scripts/export_duckdb.py / scripts/merge_duckdb.py. Published via GitHub
+# Releases (see .github/workflows/duckdb_snapshot.yml), not committed —
+# keeps this public repo's git history free of large binaries.
+*.duckdb
+/snapshots/

@@ -1,0 +1,1130 @@
+name: GHAPI Crawler
+
+on:
+  # Schedule disabled 2026-06-02: both populations crossed the 100k-hydrated
+  # in-window target, the equal-window backfill is complete, and Supabase has
+  # been backed up + wiped to reset the free tier. No automatic runs while the
+  # database is empty. Restore the cron once we decide on the next backfill
+  # window (or migrate off Supabase free tier). workflow_dispatch is preserved
+  # so manual runs remain possible for testing.
+  # schedule:
+  #   - cron: "0 * * * *"
+  #
+  # crawl-resume-202607 fresh-window campaign (Jatin, 2026-07-05): a fresh
+  # discovery window covering codex/claude_head AND the 7 new peer agents
+  # (copilot/cursor/devin/jules/cosine/tembo/openhands), Codex/Claude capped
+  # at ~100K hydrated each via vars.GHAPI_HYDRATION_AGENT_CAP (see the
+  # "Crawl GitHub and upsert Postgres" step below), peers uncapped since a
+  # full most-recent month per peer tops out at ~110K (Cursor) anyway.
+  # Required dispatch inputs per agent, since none of this should happen
+  # implicitly:
+  #   - codex / claude_head: reset_cursor=true (their cursors currently sit
+  #     at the old DISCOVERY_END_UTC=2026-03-05 backfill end-bound) plus a
+  #     new start_date/end_date bounding the fresh window. Resetting a live
+  #     cursor is deliberate and destructive to resume-from-here progress,
+  #     so it is never defaulted — always pass reset_cursor=true explicitly.
+  #   - the 7 peer agents: reset_cursor=true (harmless — they have no prior
+  #     cursor row) plus an explicit start_date. Without it, discovery falls
+  #     back to PRARENA_START_DATE's default of 2026-01-01T00:00:00Z, which
+  #     would pull far more than the intended "most recent month" for
+  #     higher-volume peers like Copilot/Cursor.
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Optional single agent key (codex|claude|claude_head|claude_body|cross|copilot|cursor|devin|jules|cosine|tembo|openhands); claude_body runs 6 shards, codex/claude/claude_head run 12, copilot/cursor run 6, devin runs 4, jules runs 2, cosine/tembo/openhands run 1"
+        required: false
+        default: ""
+      hydration_limit:
+        description: "Optional hydration limit override"
+        required: false
+        default: ""
+      metrics_limit:
+        description: "Optional metrics limit override"
+        required: false
+        default: ""
+      codex_shards:
+        description: "Unused (Codex crawl suspended)"
+        required: false
+        default: ""
+      claude_shards:
+        description: "Optional Claude hydration shard count override (1-12)"
+        required: false
+        default: ""
+      start_date:
+        description: "Optional discovery start override (ISO-8601 UTC)"
+        required: false
+        default: ""
+      end_date:
+        description: "Optional discovery end-bound (ISO-8601 UTC); discovery never crawls PRs created after this. Used to pin a closed window."
+        required: false
+        default: ""
+      reset_cursor:
+        description: "Reset discovery cursor for selected agent before run (required for backfill)"
+        required: false
+        type: boolean
+        default: false
+      skip_discovery:
+        description: "Skip discovery step and run hydration-only (post-prune mode)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize whole runs (one at a time) so stacked hourly cron runs can't overlap and exceed Supabase's 15-client pool (EMAXCONNSESSION). Queue extras; hydration is resumable so nothing is lost.
+concurrency:
+  group: ghapi-crawler-run
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    environment: Crawl
+    timeout-minutes: 300
+    concurrency:
+      group: ghapi-crawl-${{ matrix.agent }}-shard-${{ matrix.shard_index }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          # 2026-06-02: codex matrix entries restored after both populations
+          # crossed the 100k-hydrated in-window target on 2026-06-02. The full
+          # 12+12 matrix is back in place but the schedule cron is commented
+          # out above, so these only fire on manual workflow_dispatch. App
+          # (author:claude[bot]), claude_body, and cross remain PAUSED — the
+          # equal-window backfill is over (head:codex/ vs head:claude/ only).
+          # claude_head stores as agent_key='claude'. SKIP_DISCOVERY default
+          # stays 'true' because both cursors are at DISCOVERY_END_UTC=2026-03-05.
+          - agent: codex
+            shard_index: 0
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 1
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 2
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 3
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 4
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 5
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 6
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 7
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 8
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 9
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 10
+            agent_db_key: codex
+          - agent: codex
+            shard_index: 11
+            agent_db_key: codex
+          - agent: claude_head
+            shard_index: 0
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 1
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 2
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 3
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 4
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 5
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 6
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 7
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 8
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 9
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 10
+            agent_db_key: claude
+          - agent: claude_head
+            shard_index: 11
+            agent_db_key: claude
+          # crawl-resume-202607 (2026-07-05): peer agents for the Profile 2
+          # fresh-window campaign. Shard counts here must match the
+          # elif ladder in "Plan hydration throughput" below (agents not
+          # listed there fall through to shard_count=1, silently no-opping
+          # every shard_index > 0 entry). codegen stays excluded — dormant
+          # since 2026-03-27, 0 PRs/month, no rebrand signal found
+          # (agents.py). claude (App), claude_body, and cross stay paused.
+          - agent: copilot
+            shard_index: 0
+            agent_db_key: copilot
+          - agent: copilot
+            shard_index: 1
+            agent_db_key: copilot
+          - agent: copilot
+            shard_index: 2
+            agent_db_key: copilot
+          - agent: copilot
+            shard_index: 3
+            agent_db_key: copilot
+          - agent: copilot
+            shard_index: 4
+            agent_db_key: copilot
+          - agent: copilot
+            shard_index: 5
+            agent_db_key: copilot
+          - agent: cursor
+            shard_index: 0
+            agent_db_key: cursor
+          - agent: cursor
+            shard_index: 1
+            agent_db_key: cursor
+          - agent: cursor
+            shard_index: 2
+            agent_db_key: cursor
+          - agent: cursor
+            shard_index: 3
+            agent_db_key: cursor
+          - agent: cursor
+            shard_index: 4
+            agent_db_key: cursor
+          - agent: cursor
+            shard_index: 5
+            agent_db_key: cursor
+          - agent: devin
+            shard_index: 0
+            agent_db_key: devin
+          - agent: devin
+            shard_index: 1
+            agent_db_key: devin
+          - agent: devin
+            shard_index: 2
+            agent_db_key: devin
+          - agent: devin
+            shard_index: 3
+            agent_db_key: devin
+          - agent: jules
+            shard_index: 0
+            agent_db_key: jules
+          - agent: jules
+            shard_index: 1
+            agent_db_key: jules
+          - agent: cosine
+            shard_index: 0
+            agent_db_key: cosine
+          - agent: tembo
+            shard_index: 0
+            agent_db_key: tembo
+          - agent: openhands
+            shard_index: 0
+            agent_db_key: openhands
+    env:
+      AGENT_KEY: ${{ matrix.agent }}
+      AGENT_DB_KEY: ${{ matrix.agent_db_key }}
+      SHARD_INDEX: ${{ matrix.shard_index }}
+      DISPATCH_AGENT: ${{ github.event.inputs.agent }}
+      DISPATCH_CODEX_SHARDS: ${{ github.event.inputs.codex_shards }}
+      DISPATCH_CLAUDE_SHARDS: ${{ github.event.inputs.claude_shards }}
+      INGESTOR_WRITER_URL: ${{ secrets.INGESTOR_WRITER_URL }}
+      LEGACY_GHAPI_DATABASE_URL: ${{ secrets.GHAPI_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.INGESTOR_WRITER_URL }}
+      GITHUB_TOKEN: ${{ secrets.GHAPI_GITHUB_TOKEN }}
+      FALLBACK_GITHUB_TOKEN: ${{ github.token }}
+      REPO_ALLOWLIST: ${{ vars.GHAPI_REPO_ALLOWLIST }}
+      REPO_DENYLIST: ${{ vars.GHAPI_REPO_DENYLIST }}
+      GITHUB_CACHE_ENABLED: ${{ vars.GHAPI_GITHUB_CACHE_ENABLED }}
+      GITHUB_CACHE_TTL_SECONDS: ${{ vars.GHAPI_GITHUB_CACHE_TTL_SECONDS }}
+      GITHUB_CACHE_MAX_ENTRIES: ${{ vars.GHAPI_GITHUB_CACHE_MAX_ENTRIES }}
+      GITHUB_CACHE_BACKEND: ${{ vars.GHAPI_GITHUB_CACHE_BACKEND }}
+      GITHUB_CACHE_PERSISTENT_MAX_ENTRIES: ${{ vars.GHAPI_GITHUB_CACHE_PERSISTENT_MAX_ENTRIES }}
+      GITHUB_CACHE_PERSISTENT_CLEANUP_INTERVAL_SECONDS: ${{ vars.GHAPI_GITHUB_CACHE_PERSISTENT_CLEANUP_INTERVAL_SECONDS }}
+      GITHUB_CACHE_REDIS_URL: ${{ vars.GHAPI_GITHUB_CACHE_REDIS_URL }}
+      GITHUB_CACHE_REDIS_KEY_PREFIX: ${{ vars.GHAPI_GITHUB_CACHE_REDIS_KEY_PREFIX }}
+      GITHUB_GRAPHQL_ENABLED: ${{ vars.GHAPI_GITHUB_GRAPHQL_ENABLED }}
+      GITHUB_GRAPHQL_BATCH_SIZE: ${{ vars.GHAPI_GITHUB_GRAPHQL_BATCH_SIZE }}
+      SEARCH_DELAY_SECONDS: ${{ vars.GHAPI_SEARCH_DELAY_SECONDS }}
+      SEARCH_MAX_RETRIES: ${{ vars.GHAPI_SEARCH_MAX_RETRIES }}
+      PRARENA_START_DATE: ${{ vars.GHAPI_START_DATE }}
+      DISCOVERY_END_UTC: ${{ vars.GHAPI_DISCOVERY_END_DATE }}
+      DISPATCH_END_DATE: ${{ github.event.inputs.end_date }}
+      DISCOVERY_OVERLAP_MINUTES: ${{ vars.GHAPI_DISCOVERY_OVERLAP_MINUTES }}
+      DISCOVERY_MAX_WINDOW_HOURS: ${{ vars.GHAPI_DISCOVERY_MAX_WINDOW_HOURS }}
+      HYDRATION_LIMIT: ${{ vars.GHAPI_HYDRATION_LIMIT }}
+      METRICS_LIMIT: ${{ vars.GHAPI_METRICS_LIMIT }}
+      CODEX_HYDRATION_SHARDS: ${{ vars.GHAPI_CODEX_HYDRATION_SHARDS }}
+      CLAUDE_HYDRATION_SHARDS: ${{ vars.GHAPI_CLAUDE_HYDRATION_SHARDS }}
+      ADAPTIVE_HYDRATION_ENABLED: ${{ vars.GHAPI_ADAPTIVE_HYDRATION_ENABLED }}
+      HYDRATION_AGENT_TARGET: ${{ vars.GHAPI_HYDRATION_AGENT_TARGET }}
+      # Hard per-agent corpus cap (crawl-resume-202607): only applied to
+      # codex/claude below, never to peer agents, even if this var is left
+      # set — see the "Crawl GitHub and upsert Postgres" step's HYDRATION_AGENT
+      # gate.
+      HYDRATION_AGENT_CAP: ${{ vars.GHAPI_HYDRATION_AGENT_CAP }}
+      DISPATCH_HYDRATION_LIMIT: ${{ github.event.inputs.hydration_limit }}
+      DISPATCH_METRICS_LIMIT: ${{ github.event.inputs.metrics_limit }}
+      DISPATCH_START_DATE: ${{ github.event.inputs.start_date }}
+      DISPATCH_RESET_CURSOR: ${{ github.event.inputs.reset_cursor }}
+      # Default flipped to 'true' on 2026-05-31: codex+claude_head cursors are at
+      # DISCOVERY_END_UTC=2026-03-05, so discovery is a no-op. Dispatch with
+      # skip_discovery=false or set vars.GHAPI_SKIP_DISCOVERY=false to re-enable.
+      SKIP_DISCOVERY: ${{ github.event.inputs.skip_discovery || vars.GHAPI_SKIP_DISCOVERY || 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate environment
+        run: |
+          if [ -z "${DATABASE_URL:-}" ] && [ -n "${LEGACY_GHAPI_DATABASE_URL:-}" ]; then
+            echo "INGESTOR_WRITER_URL not set; falling back to GHAPI_DATABASE_URL"
+            DATABASE_URL="${LEGACY_GHAPI_DATABASE_URL}"
+            export DATABASE_URL
+            echo "DATABASE_URL=${DATABASE_URL}" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "Missing secret INGESTOR_WRITER_URL (or legacy GHAPI_DATABASE_URL)"
+            exit 1
+          fi
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "GHAPI_GITHUB_TOKEN not set; using Actions token"
+            echo "GITHUB_TOKEN=${FALLBACK_GITHUB_TOKEN}" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${PRARENA_START_DATE:-}" ]; then
+            echo "GHAPI_START_DATE not set; default PRARENA_START_DATE=2026-01-01T00:00:00Z will be used."
+            echo "Initial backfill may take multiple runs."
+          fi
+          if [ -n "${DISPATCH_START_DATE:-}" ]; then
+            echo "Dispatch override detected: PRARENA_START_DATE=${DISPATCH_START_DATE}"
+            echo "PRARENA_START_DATE=${DISPATCH_START_DATE}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${DISPATCH_END_DATE:-}" ]; then
+            echo "Dispatch override detected: DISCOVERY_END_UTC=${DISPATCH_END_DATE}"
+            echo "DISCOVERY_END_UTC=${DISPATCH_END_DATE}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${DISCOVERY_END_UTC:-}" ]; then
+            echo "Discovery end-bound active: walk capped at DISCOVERY_END_UTC=${DISCOVERY_END_UTC}"
+          fi
+
+      - name: Preflight DATABASE_URL
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from urllib.parse import parse_qs, unquote, urlsplit
+
+          raw = (os.getenv("DATABASE_URL") or "").strip()
+          parsed = urlsplit(raw)
+          host = (parsed.hostname or "").lower()
+          username = unquote(parsed.username or "").strip()
+          db_name = (parsed.path or "/").lstrip("/")
+          query = parse_qs(parsed.query or "", keep_blank_values=True)
+          sslmode = (query.get("sslmode") or [""])[0].strip().lower()
+
+          if host.startswith("db.") and host.endswith(".supabase.co"):
+              parts = host.split(".")
+              project_ref = parts[1] if len(parts) >= 3 else "<project-ref>"
+              print("DATABASE_URL uses Supabase direct host:", host)
+              print("GitHub-hosted runners may fail to reach direct IPv6-only database endpoints.")
+              print("Use Supabase Session pooler URL instead (Connect -> Session pooler).")
+              print(
+                  "Expected format: "
+                  f"postgresql://ingestor_writer.{project_ref}:[PASSWORD]"
+                  "@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
+              )
+              sys.exit(1)
+
+          if host.endswith(".pooler.supabase.com"):
+              print("DATABASE_URL preflight OK: pooler host detected.")
+          else:
+              print("DATABASE_URL preflight warning: non-Supabase-pooler host:", host or "<empty>")
+
+          if db_name != "postgres":
+              print(
+                  "DATABASE_URL preflight failed: database path must be /postgres. "
+                  f"Found /{db_name or '<empty>'}"
+              )
+              sys.exit(1)
+
+          if sslmode != "require":
+              print(
+                  "DATABASE_URL preflight failed: sslmode=require is required. "
+                  f"Found sslmode={sslmode or '<missing>'}"
+              )
+              sys.exit(1)
+
+          role_name = username.split(".", 1)[0] if username else ""
+          if role_name != "ingestor_writer":
+              print(
+                  "DATABASE_URL preflight failed: workflow must use ingestor_writer role. "
+                  f"Found username={username or '<missing>'}"
+              )
+              sys.exit(1)
+          PY
+
+      - name: Optional reset discovery cursor
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_AGENT:-}" ] && [ "${DISPATCH_AGENT}" != "${AGENT_KEY}" ]; then
+            echo "Skipping cursor reset for matrix agent=${AGENT_KEY}; dispatch requested agent=${DISPATCH_AGENT}"
+            exit 0
+          fi
+          if [ "${SHARD_INDEX}" != "0" ]; then
+            echo "Skipping cursor reset for agent=${AGENT_KEY} shard=${SHARD_INDEX}; only shard 0 can reset cursor"
+            exit 0
+          fi
+          if [ "${DISPATCH_RESET_CURSOR:-false}" != "true" ]; then
+            echo "Discovery cursor reset not requested for agent=${AGENT_KEY}"
+            exit 0
+          fi
+          echo "Resetting discovery cursor for agent=${AGENT_KEY}"
+          python - <<'PY'
+          import os
+
+          from ghapi_crawler.config import load_settings
+          from ghapi_crawler.db import open_connection
+
+          agent_key = os.environ["AGENT_KEY"]
+          settings = load_settings()
+          with open_connection(settings) as conn, conn.cursor() as cur:
+              cur.execute(
+                  "DELETE FROM discovery_state WHERE agent_key = %s",
+                  (agent_key,),
+              )
+              deleted = int(cur.rowcount or 0)
+              conn.commit()
+          print(f"Discovery cursor reset complete for agent={agent_key}; deleted_rows={deleted}")
+          PY
+
+      - name: Build cross-repo allowlist
+        if: matrix.agent == 'cross' && matrix.shard_index == 0
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import psycopg
+
+          database_url = (os.environ.get("DATABASE_URL") or "").strip()
+          if not database_url:
+              raise SystemExit("DATABASE_URL required for cross-repo allowlist")
+
+          with psycopg.connect(database_url) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(
+                      """
+                      SELECT repo_full_name
+                      FROM pull_requests
+                      WHERE agent_key = 'codex'
+                        AND last_hydrated_at IS NOT NULL
+                      GROUP BY repo_full_name
+                      HAVING COUNT(*) >= 3
+                      ORDER BY COUNT(*) DESC
+                      LIMIT 8000
+                      """
+                  )
+                  repos = [row[0] for row in cur.fetchall()]
+
+          if not repos:
+              print("No Codex repos found — skipping cross discovery (codex is suspended).")
+              github_env = (os.environ.get("GITHUB_ENV") or "").strip()
+              if github_env:
+                  with open(github_env, "a", encoding="utf-8") as fh:
+                      fh.write("CROSS_NO_REPOS=true\n")
+              raise SystemExit(0)
+
+          allowlist = ",".join(repos)
+          # Write to a file rather than GITHUB_ENV to avoid "Argument list too long"
+          # when spawning subprocesses with a huge env var (8000 repos × ~25 chars).
+          allowlist_path = "/tmp/cross_repo_allowlist.txt"
+          with open(allowlist_path, "w", encoding="utf-8") as fh:
+              fh.write(allowlist)
+          github_env = (os.environ.get("GITHUB_ENV") or "").strip()
+          if github_env:
+              with open(github_env, "a", encoding="utf-8") as fh:
+                  fh.write(f"CROSS_REPO_ALLOWLIST_FILE={allowlist_path}\n")
+          print(f"Cross-repo allowlist: {len(repos)} Codex repos (>= 3 hydrated PRs each) → {allowlist_path}")
+          PY
+
+      - name: Plan hydration throughput
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_AGENT:-}" ] && [ "${DISPATCH_AGENT}" != "${AGENT_KEY}" ]; then
+            echo "Skipping throughput plan for matrix agent=${AGENT_KEY}; dispatch requested agent=${DISPATCH_AGENT}"
+            exit 0
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+
+          import psycopg
+
+          agent_key = os.environ["AGENT_KEY"]
+          # agent_db_key is what's actually stored in pull_requests.agent_key.
+          # claude_head stores as 'claude'; cross stores as 'cross'.
+          agent_db_key = (os.environ.get("AGENT_DB_KEY") or agent_key).strip() or agent_key
+          dispatch_hydration_raw = (os.environ.get("DISPATCH_HYDRATION_LIMIT") or "").strip()
+          dispatch_codex_shards_raw = (os.environ.get("DISPATCH_CODEX_SHARDS") or "").strip()
+          dispatch_claude_shards_raw = (os.environ.get("DISPATCH_CLAUDE_SHARDS") or "").strip()
+          hydration_raw = (os.environ.get("HYDRATION_LIMIT") or "").strip()
+          codex_shards_raw = (os.environ.get("CODEX_HYDRATION_SHARDS") or "").strip()
+          claude_shards_raw = (os.environ.get("CLAUDE_HYDRATION_SHARDS") or "").strip()
+          hydration_agent_target_raw = (os.environ.get("HYDRATION_AGENT_TARGET") or "").strip()
+          adaptive_enabled_raw = (os.environ.get("ADAPTIVE_HYDRATION_ENABLED") or "").strip().lower()
+          adaptive_enabled = adaptive_enabled_raw not in {"0", "false", "no", "off"}
+
+          def parse_bounded_int(
+              raw: str,
+              *,
+              default: int,
+              minimum: int,
+              maximum: int,
+              label: str,
+          ) -> int:
+              candidate = (raw or "").strip()
+              if not candidate:
+                  return default
+              if candidate.startswith("-"):
+                  raise SystemExit(
+                      f"Invalid {label} '{candidate}'. Expected integer in [{minimum}, {maximum}]."
+                  )
+              if not candidate.isdigit():
+                  raise SystemExit(
+                      f"Invalid {label} '{candidate}'. Expected integer in [{minimum}, {maximum}]."
+                  )
+              parsed = int(candidate)
+              if parsed < minimum or parsed > maximum:
+                  raise SystemExit(
+                      f"Invalid {label} '{candidate}'. Expected integer in [{minimum}, {maximum}]."
+                  )
+              return parsed
+
+          hydration_limit = parse_bounded_int(
+              dispatch_hydration_raw or hydration_raw,
+              default=900,
+              minimum=1,
+              maximum=2000,
+              label="hydration limit",
+          )
+
+          shard_count = 1
+          if agent_key == "codex":
+              shard_count = parse_bounded_int(
+                  dispatch_codex_shards_raw or codex_shards_raw,
+                  default=6,
+                  minimum=1,
+                  maximum=12,
+                  label="codex shard count",
+              )
+          elif agent_key in ("claude", "claude_head", "claude_body", "cross"):
+              shard_count = parse_bounded_int(
+                  dispatch_claude_shards_raw or claude_shards_raw,
+                  default=12,
+                  minimum=1,
+                  maximum=12,
+                  label="claude shard count",
+              )
+          # crawl-resume-202607: static shard counts for the Profile 2 peer
+          # agents. These are NOT part of should_adapt below (no backlog-based
+          # adaptation — Profile 2 for them is a fixed full-month capture, not
+          # an ongoing high-volume grind), so this is their only shard-count
+          # assignment. Without an explicit branch here, agent_key would keep
+          # the shard_count=1 default set above, silently no-opping every
+          # shard_index > 0 matrix entry added for these agents.
+          elif agent_key in ("copilot", "cursor"):
+              shard_count = 6
+          elif agent_key == "devin":
+              shard_count = 4
+          elif agent_key == "jules":
+              shard_count = 2
+          elif agent_key in ("cosine", "tembo", "openhands"):
+              shard_count = 1
+
+          backlog_pending = 0
+          rate_limit_errors_pending = 0
+          profile = "static_defaults"
+
+          dispatch_shard_override = (
+              dispatch_codex_shards_raw if agent_key == "codex" else dispatch_claude_shards_raw
+          )
+          should_adapt = (
+              agent_key in ("codex", "claude", "claude_head", "claude_body", "cross")
+              and adaptive_enabled
+              and not dispatch_hydration_raw
+              and not dispatch_shard_override
+          )
+
+          if should_adapt:
+              database_url = (os.environ.get("DATABASE_URL") or "").strip()
+              if not database_url:
+                  raise SystemExit("DATABASE_URL is required for adaptive throughput planning")
+
+              with psycopg.connect(database_url) as conn:
+                  with conn.cursor() as cur:
+                      # Query against agent_db_key (the actual column value in pull_requests).
+                      cur.execute(
+                          """
+                          SELECT COUNT(*)
+                          FROM pull_requests
+                          WHERE agent_key = %s
+                            AND (last_hydrated_at IS NULL OR updated_at > last_hydrated_at)
+                            AND (hydration_error IS NULL OR hydration_error NOT ILIKE '%%GitHub request failed without retry%%')
+                          """,
+                          (agent_db_key,),
+                      )
+                      backlog_row = cur.fetchone()
+                      backlog_pending = int(backlog_row[0] or 0) if backlog_row else 0
+
+                      cur.execute(
+                          """
+                          SELECT COUNT(*)
+                          FROM pull_requests
+                          WHERE agent_key = %s
+                            AND hydration_error IS NOT NULL
+                            AND hydration_error ILIKE '%%rate limit%%'
+                            AND (last_hydrated_at IS NULL OR updated_at > last_hydrated_at)
+                          """,
+                          (agent_db_key,),
+                      )
+                      rate_row = cur.fetchone()
+                      rate_limit_errors_pending = int(rate_row[0] or 0) if rate_row else 0
+
+                      # When a target is set, compute remaining PRs to reach it
+                      remaining_to_target = None
+                      if hydration_agent_target_raw and hydration_agent_target_raw.isdigit():
+                          agent_target = int(hydration_agent_target_raw)
+                          cur.execute(
+                              """
+                              SELECT COUNT(*)
+                              FROM pull_requests
+                              WHERE agent_key = %s AND last_hydrated_at IS NOT NULL
+                              """,
+                              (agent_db_key,),
+                          )
+                          hydrated_row = cur.fetchone()
+                          already_hydrated = int(hydrated_row[0] or 0) if hydrated_row else 0
+                          remaining_to_target = max(0, agent_target - already_hydrated)
+
+          if should_adapt and agent_key == "codex":
+              if rate_limit_errors_pending >= 3000:
+                  shard_count = 5
+                  hydration_limit = min(hydration_limit, 600)
+                  profile = "adaptive_rate_limit_high"
+              elif rate_limit_errors_pending >= 1000:
+                  shard_count = 6
+                  hydration_limit = min(hydration_limit, 750)
+                  profile = "adaptive_rate_limit_medium"
+              elif rate_limit_errors_pending >= 300:
+                  shard_count = 6
+                  hydration_limit = min(hydration_limit, 900)
+                  profile = "adaptive_rate_limit_low"
+              elif remaining_to_target is not None and remaining_to_target > 0:
+                  shard_count = 4
+                  hydration_limit = min(hydration_limit, 300)
+                  profile = "adaptive_target_based"
+              elif backlog_pending >= 700000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 2000)
+                  profile = "adaptive_backlog_ultra"
+              elif backlog_pending >= 500000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 2000)
+                  profile = "adaptive_backlog_extreme"
+              elif backlog_pending >= 250000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 2000)
+                  profile = "adaptive_backlog_high"
+              elif backlog_pending >= 50000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 2000)
+                  profile = "adaptive_backlog_moderate"
+              elif backlog_pending >= 10000:
+                  shard_count = max(shard_count, 8)
+                  hydration_limit = max(hydration_limit, 1500)
+                  profile = "adaptive_backlog_low"
+              else:
+                  shard_count = max(shard_count, 4)
+                  hydration_limit = max(hydration_limit, 900)
+                  profile = "adaptive_backlog_minimal"
+
+              shard_count = min(max(shard_count, 1), 12)
+              hydration_limit = min(max(hydration_limit, 1), 2000)
+
+          elif should_adapt and agent_key in ("claude", "claude_head", "claude_body", "cross"):
+              if remaining_to_target is not None and remaining_to_target > 0:
+                  shard_count = 4
+                  hydration_limit = min(hydration_limit, 300)
+                  profile = "adaptive_target_based"
+              elif backlog_pending >= 50000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 900)
+                  profile = "adaptive_backlog_high"
+              elif backlog_pending >= 10000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 900)
+                  profile = "adaptive_backlog_moderate"
+              elif backlog_pending >= 2000:
+                  shard_count = max(shard_count, 12)
+                  hydration_limit = max(hydration_limit, 900)
+                  profile = "adaptive_backlog_low"
+              else:
+                  shard_count = max(shard_count, 12)
+                  profile = "adaptive_backlog_minimal"
+
+              shard_count = min(max(shard_count, 1), 12)
+              hydration_limit = min(max(hydration_limit, 1), 2000)
+
+          plan = {
+              "agent": agent_key,
+              "profile": profile,
+              "hydration_limit": hydration_limit,
+              "shard_count": shard_count,
+              "backlog_pending": backlog_pending,
+              "rate_limit_errors_pending": rate_limit_errors_pending,
+              "adaptive_enabled": adaptive_enabled,
+          }
+          print("Hydration throughput plan:")
+          print(json.dumps(plan, indent=2))
+
+          github_env = (os.environ.get("GITHUB_ENV") or "").strip()
+          if github_env:
+              with open(github_env, "a", encoding="utf-8") as handle:
+                  handle.write(f"EFFECTIVE_HYDRATION_LIMIT={hydration_limit}\n")
+                  handle.write(f"EFFECTIVE_SHARD_COUNT={shard_count}\n")
+                  handle.write(f"THROUGHPUT_PROFILE={profile}\n")
+                  handle.write(f"THROUGHPUT_BACKLOG_PENDING={backlog_pending}\n")
+                  handle.write(
+                      f"THROUGHPUT_RATE_LIMIT_ERRORS_PENDING={rate_limit_errors_pending}\n"
+                  )
+
+          step_summary = (os.environ.get("GITHUB_STEP_SUMMARY") or "").strip()
+          if step_summary:
+              lines = [
+                  f"### Throughput plan ({agent_key})",
+                  "",
+                  f"- Profile: `{profile}`",
+                  f"- Hydration limit: `{hydration_limit}`",
+                  f"- Active shards: `{shard_count}`",
+                  f"- Pending backlog: `{backlog_pending}`",
+                  f"- Pending rate-limit errors: `{rate_limit_errors_pending}`",
+                  "",
+              ]
+              with open(step_summary, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines))
+          PY
+
+      - name: Crawl GitHub and upsert Postgres
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_AGENT:-}" ] && [ "${DISPATCH_AGENT}" != "${AGENT_KEY}" ]; then
+            echo "Skipping matrix agent=${AGENT_KEY}; dispatch requested agent=${DISPATCH_AGENT}"
+            exit 0
+          fi
+
+          HYDRATION_LIMIT_VAL="${EFFECTIVE_HYDRATION_LIMIT:-${DISPATCH_HYDRATION_LIMIT:-${HYDRATION_LIMIT:-900}}}"
+          SHARD_COUNT_VAL="${EFFECTIVE_SHARD_COUNT:-1}"
+          # AGENT_DB_KEY: the agent_key actually stored in pull_requests (e.g. claude_head→claude).
+          # Used for hydration so shards target the correct DB partition.
+          HYDRATION_AGENT="${AGENT_DB_KEY:-${AGENT_KEY}}"
+
+          case "${SHARD_COUNT_VAL}" in
+            ''|*[!0-9]*)
+              echo "Invalid shard count '${SHARD_COUNT_VAL}'. Expected integer in [1, 12]."
+              exit 1
+              ;;
+          esac
+          if [ "${SHARD_COUNT_VAL}" -lt 1 ] || [ "${SHARD_COUNT_VAL}" -gt 12 ]; then
+            echo "Invalid shard count '${SHARD_COUNT_VAL}'. Expected integer in [1, 12]."
+            exit 1
+          fi
+
+          if [ "${SHARD_INDEX}" -ge "${SHARD_COUNT_VAL}" ]; then
+            echo "Skipping inactive shard agent=${AGENT_KEY} shard=${SHARD_INDEX}; active_shards=${SHARD_COUNT_VAL}"
+            exit 0
+          fi
+
+          mkdir -p run_logs
+          echo "Using PRARENA_START_DATE=${PRARENA_START_DATE:-2026-01-01T00:00:00Z}"
+
+          # Pass allowlist file path (not content) to Python — avoids E2BIG when
+          # spawning subprocesses with a 200KB REPO_ALLOWLIST in the environment.
+          # config.py reads REPO_ALLOWLIST_FILE and loads the content itself.
+          if [ -n "${CROSS_REPO_ALLOWLIST_FILE:-}" ] && [ -f "${CROSS_REPO_ALLOWLIST_FILE}" ]; then
+            export REPO_ALLOWLIST_FILE="${CROSS_REPO_ALLOWLIST_FILE}"
+            echo "Using cross-repo allowlist from ${CROSS_REPO_ALLOWLIST_FILE}"
+          fi
+
+          if [ "${SKIP_DISCOVERY:-false}" = "true" ] || [ "${CROSS_NO_REPOS:-false}" = "true" ]; then
+            echo "Skipping discovery (SKIP_DISCOVERY=${SKIP_DISCOVERY:-false}, CROSS_NO_REPOS=${CROSS_NO_REPOS:-false}); hydration-only mode"
+          elif [ "${SHARD_INDEX}" = "0" ]; then
+            echo "Running discovery agent=${AGENT_KEY} db_key=${HYDRATION_AGENT} (hydration flush every 100 PRs, shard=0/${SHARD_COUNT_VAL})"
+            python -m ghapi_crawler.discovery \
+              --agent "${AGENT_KEY}" \
+              --hydration-batch-size 100 \
+              --hydration-shard-index "${SHARD_INDEX}" \
+              --hydration-shard-count "${SHARD_COUNT_VAL}" \
+              2>&1 | tee "run_logs/discovery-${AGENT_KEY}.log"
+          else
+            echo "Skipping discovery on shard=${SHARD_INDEX}; shard 0 handles discovery"
+          fi
+
+          HYDRATION_TARGET_VAL="${HYDRATION_AGENT_TARGET:-}"
+          # agent_cap is the crawl-resume-202607 Codex/Claude campaign budget
+          # control — only ever passed for those two, even if
+          # HYDRATION_AGENT_CAP is left set while a peer agent is dispatched.
+          HYDRATION_CAP_VAL=""
+          if [ "${HYDRATION_AGENT}" = "codex" ] || [ "${HYDRATION_AGENT}" = "claude" ]; then
+            HYDRATION_CAP_VAL="${HYDRATION_AGENT_CAP:-}"
+          fi
+
+          hydration_args=(
+            --agent "${HYDRATION_AGENT}"
+            --limit "${HYDRATION_LIMIT_VAL}"
+            --shard-index "${SHARD_INDEX}"
+            --shard-count "${SHARD_COUNT_VAL}"
+          )
+          if [ -n "${HYDRATION_TARGET_VAL}" ]; then
+            hydration_args+=(--target "${HYDRATION_TARGET_VAL}")
+          fi
+          if [ -n "${HYDRATION_CAP_VAL}" ]; then
+            hydration_args+=(--agent-cap "${HYDRATION_CAP_VAL}")
+          fi
+
+          echo "Running hydration agent=${HYDRATION_AGENT} limit=${HYDRATION_LIMIT_VAL} shard=${SHARD_INDEX}/${SHARD_COUNT_VAL} target=${HYDRATION_TARGET_VAL:-none} cap=${HYDRATION_CAP_VAL:-none}"
+          python -m ghapi_crawler.hydration "${hydration_args[@]}" \
+            2>&1 | tee "run_logs/hydration-${AGENT_KEY}-shard-${SHARD_INDEX}-of-${SHARD_COUNT_VAL}.log"
+
+      - name: Calibration summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_AGENT:-}" ] && [ "${DISPATCH_AGENT}" != "${AGENT_KEY}" ]; then
+            echo "Skipping calibration summary for matrix agent=${AGENT_KEY}; dispatch requested agent=${DISPATCH_AGENT}"
+            exit 0
+          fi
+
+          SHARD_COUNT_VAL="${EFFECTIVE_SHARD_COUNT:-1}"
+
+          case "${SHARD_COUNT_VAL}" in
+            ''|*[!0-9]*)
+              echo "Skipping calibration summary: invalid shard count '${SHARD_COUNT_VAL}'"
+              exit 0
+              ;;
+          esac
+
+          if [ "${SHARD_INDEX}" -ge "${SHARD_COUNT_VAL}" ]; then
+            echo "Skipping calibration summary for inactive shard agent=${AGENT_KEY} shard=${SHARD_INDEX}"
+            exit 0
+          fi
+
+          RATE_LIMIT_WARNINGS="$(grep -hi "secondary rate limit detected" run_logs/*.log 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)"
+          export RATE_LIMIT_WARNINGS
+          export SHARD_COUNT_VAL
+          export THROUGHPUT_PROFILE="${THROUGHPUT_PROFILE:-unknown}"
+          export THROUGHPUT_BACKLOG_PENDING="${THROUGHPUT_BACKLOG_PENDING:-0}"
+          export THROUGHPUT_RATE_LIMIT_ERRORS_PENDING="${THROUGHPUT_RATE_LIMIT_ERRORS_PENDING:-0}"
+
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+
+          import psycopg
+
+          database_url = (os.environ.get("DATABASE_URL") or "").strip()
+          agent_key = os.environ["AGENT_KEY"]
+          agent_db_key = (os.environ.get("AGENT_DB_KEY") or agent_key).strip() or agent_key
+          shard_index = int(os.environ["SHARD_INDEX"])
+          shard_count = int(os.environ["SHARD_COUNT_VAL"])
+          rate_limit_warnings = int(os.environ.get("RATE_LIMIT_WARNINGS", "0") or "0")
+          throughput_profile = os.environ.get("THROUGHPUT_PROFILE", "unknown")
+          throughput_backlog_pending = int(
+              os.environ.get("THROUGHPUT_BACKLOG_PENDING", "0") or "0"
+          )
+          throughput_rate_limit_errors_pending = int(
+              os.environ.get("THROUGHPUT_RATE_LIMIT_ERRORS_PENDING", "0") or "0"
+          )
+
+          if not database_url:
+              raise SystemExit("DATABASE_URL is required for calibration summary")
+
+          def fetch_count(cur, sql: str, params: tuple[object, ...]) -> int:
+              cur.execute(sql, params)
+              row = cur.fetchone()
+              return int(row[0] or 0) if row else 0
+
+          with psycopg.connect(database_url) as conn:
+              with conn.cursor() as cur:
+                  discovered_24h = fetch_count(
+                      cur,
+                      """
+                      SELECT COUNT(*)
+                      FROM pull_requests
+                      WHERE agent_key = %s
+                        AND first_seen_at >= now() - interval '24 hours'
+                      """,
+                      (agent_db_key,),
+                  )
+                  hydrated_24h = fetch_count(
+                      cur,
+                      """
+                      SELECT COUNT(*)
+                      FROM pull_requests
+                      WHERE agent_key = %s
+                        AND last_hydrated_at >= now() - interval '24 hours'
+                      """,
+                      (agent_db_key,),
+                  )
+                  pending_backlog = fetch_count(
+                      cur,
+                      """
+                      SELECT COUNT(*)
+                      FROM pull_requests
+                      WHERE agent_key = %s
+                        AND (last_hydrated_at IS NULL OR updated_at > last_hydrated_at)
+                      """,
+                      (agent_db_key,),
+                  )
+                  hydration_errors_pending = fetch_count(
+                      cur,
+                      """
+                      SELECT COUNT(*)
+                      FROM pull_requests
+                      WHERE agent_key = %s
+                        AND hydration_error IS NOT NULL
+                        AND (last_hydrated_at IS NULL OR updated_at > last_hydrated_at)
+                      """,
+                      (agent_db_key,),
+                  )
+                  rate_limit_errors_pending = fetch_count(
+                      cur,
+                      """
+                      SELECT COUNT(*)
+                      FROM pull_requests
+                      WHERE agent_key = %s
+                        AND hydration_error IS NOT NULL
+                        AND hydration_error ILIKE '%%rate limit%%'
+                        AND (last_hydrated_at IS NULL OR updated_at > last_hydrated_at)
+                      """,
+                      (agent_db_key,),
+                  )
+
+          summary = {
+              "agent": agent_key,
+              "shard_index": shard_index,
+              "shard_count": shard_count,
+              "captured_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+              "discovered_24h": discovered_24h,
+              "hydrated_24h": hydrated_24h,
+              "pending_backlog": pending_backlog,
+              "hydration_errors_pending": hydration_errors_pending,
+              "rate_limit_errors_pending": rate_limit_errors_pending,
+              "rate_limit_warnings_in_logs": rate_limit_warnings,
+              "throughput_profile": throughput_profile,
+              "throughput_backlog_pending": throughput_backlog_pending,
+              "throughput_rate_limit_errors_pending": throughput_rate_limit_errors_pending,
+          }
+
+          os.makedirs("run_logs", exist_ok=True)
+          output_path = f"run_logs/calibration-summary-{agent_key}-shard-{shard_index}.json"
+          with open(output_path, "w", encoding="utf-8") as handle:
+              json.dump(summary, handle, indent=2)
+
+          print("Calibration summary:")
+          print(json.dumps(summary, indent=2))
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY", "").strip()
+          if step_summary:
+              lines = [
+                  f"### Calibration snapshot ({agent_key} shard {shard_index}/{shard_count - 1})",
+                  "",
+                  f"- Captured at (UTC): `{summary['captured_at_utc']}`",
+                  f"- Discovered (24h): `{summary['discovered_24h']}`",
+                  f"- Hydrated (24h): `{summary['hydrated_24h']}`",
+                  f"- Pending backlog: `{summary['pending_backlog']}`",
+                  f"- Pending hydration errors: `{summary['hydration_errors_pending']}`",
+                  f"- Pending rate-limit errors: `{summary['rate_limit_errors_pending']}`",
+                  f"- Throughput profile: `{summary['throughput_profile']}`",
+                  f"- Throughput backlog sample: `{summary['throughput_backlog_pending']}`",
+                  f"- Throughput rate-limit sample: `{summary['throughput_rate_limit_errors_pending']}`",
+                  f"- Log secondary-rate-limit warnings (run): `{summary['rate_limit_warnings_in_logs']}`",
+                  "",
+              ]
+              with open(step_summary, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines))
+          PY
+
+  metrics:
+    needs: crawl
+    runs-on: ubuntu-latest
+    environment: Crawl
+    timeout-minutes: 120
+    concurrency:
+      group: ghapi-metrics-${{ matrix.agent }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        agent:
+          - claude
+          # cross PAUSED 2026-05-21 for the equal-window backfill (restore from git).
+          # codex re-enabled for the equal-window backfill (runs on schedule + dispatch).
+          - codex
+    env:
+      AGENT_KEY: ${{ matrix.agent }}
+      DISPATCH_AGENT: ${{ github.event.inputs.agent }}
+      INGESTOR_WRITER_URL: ${{ secrets.INGESTOR_WRITER_URL }}
+      LEGACY_GHAPI_DATABASE_URL: ${{ secrets.GHAPI_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.INGESTOR_WRITER_URL }}
+      GITHUB_TOKEN: ${{ secrets.GHAPI_GITHUB_TOKEN }}
+      FALLBACK_GITHUB_TOKEN: ${{ github.token }}
+      REPO_ALLOWLIST: ${{ vars.GHAPI_REPO_ALLOWLIST }}
+      REPO_DENYLIST: ${{ vars.GHAPI_REPO_DENYLIST }}
+      GITHUB_CACHE_ENABLED: ${{ vars.GHAPI_GITHUB_CACHE_ENABLED }}
+      GITHUB_CACHE_TTL_SECONDS: ${{ vars.GHAPI_GITHUB_CACHE_TTL_SECONDS }}
+      GITHUB_CACHE_MAX_ENTRIES: ${{ vars.GHAPI_GITHUB_CACHE_MAX_ENTRIES }}
+      GITHUB_CACHE_BACKEND: ${{ vars.GHAPI_GITHUB_CACHE_BACKEND }}
+      GITHUB_CACHE_PERSISTENT_MAX_ENTRIES: ${{ vars.GHAPI_GITHUB_CACHE_PERSISTENT_MAX_ENTRIES }}
+      GITHUB_CACHE_PERSISTENT_CLEANUP_INTERVAL_SECONDS: ${{ vars.GHAPI_GITHUB_CACHE_PERSISTENT_CLEANUP_INTERVAL_SECONDS }}
+      GITHUB_CACHE_REDIS_URL: ${{ vars.GHAPI_GITHUB_CACHE_REDIS_URL }}
+      GITHUB_CACHE_REDIS_KEY_PREFIX: ${{ vars.GHAPI_GITHUB_CACHE_REDIS_KEY_PREFIX }}
+      GITHUB_GRAPHQL_ENABLED: ${{ vars.GHAPI_GITHUB_GRAPHQL_ENABLED }}
+      GITHUB_GRAPHQL_BATCH_SIZE: ${{ vars.GHAPI_GITHUB_GRAPHQL_BATCH_SIZE }}
+      SEARCH_DELAY_SECONDS: ${{ vars.GHAPI_SEARCH_DELAY_SECONDS }}
+      SEARCH_MAX_RETRIES: ${{ vars.GHAPI_SEARCH_MAX_RETRIES }}
+      METRICS_LIMIT: ${{ vars.GHAPI_METRICS_LIMIT }}
+      DISPATCH_METRICS_LIMIT: ${{ github.event.inputs.metrics_limit }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate environment
+        run: |
+          if [ -z "${DATABASE_URL:-}" ] && [ -n "${LEGACY_GHAPI_DATABASE_URL:-}" ]; then
+            echo "INGESTOR_WRITER_URL not set; falling back to GHAPI_DATABASE_URL"
+            DATABASE_URL="${LEGACY_GHAPI_DATABASE_URL}"
+            export DATABASE_URL
+            echo "DATABASE_URL=${DATABASE_URL}" >> "$GITHUB_ENV"
+          fi
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "Missing secret INGESTOR_WRITER_URL (or legacy GHAPI_DATABASE_URL)"
+            exit 1
+          fi
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "GHAPI_GITHUB_TOKEN not set; using Actions token"
+            echo "GITHUB_TOKEN=${FALLBACK_GITHUB_TOKEN}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Preflight DATABASE_URL
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from urllib.parse import parse_qs, unquote, urlsplit
+
+          raw = (os.getenv("DATABASE_URL") or "").strip()
+          parsed = urlsplit(raw)
+          host = (parsed.hostname or "").lower()
+          username = unquote(parsed.username or "").strip()
+          db_name = (parsed.path or "/").lstrip("/")
+          query = parse_qs(parsed.query or "", keep_blank_values=True)
+          sslmode = (query.get("sslmode") or [""])[0].strip().lower()
+
+          if host.startswith("db.") and host.endswith(".supabase.co"):
+              parts = host.split(".")
+              project_ref = parts[1] if len(parts) >= 3 else "<project-ref>"
+              print("DATABASE_URL uses Supabase direct host:", host)
+              print("GitHub-hosted runners may fail to reach direct IPv6-only database endpoints.")
+              print("Use Supabase Session pooler URL instead (Connect -> Session pooler).")
+              print(
+                  "Expected format: "
+                  f"postgresql://ingestor_writer.{project_ref}:[PASSWORD]"
+                  "@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
+              )
+              sys.exit(1)
+
+          if host.endswith(".pooler.supabase.com"):
+              print("DATABASE_URL preflight OK: pooler host detected.")
+          else:
+              print("DATABASE_URL preflight warning: non-Supabase-pooler host:", host or "<empty>")
+
+          if db_name != "postgres":
+              print(
+                  "DATABASE_URL preflight failed: database path must be /postgres. "
+                  f"Found /{db_name or '<empty>'}"
+              )
+              sys.exit(1)
+
+          if sslmode != "require":
+              print(
+                  "DATABASE_URL preflight failed: sslmode=require is required. "
+                  f"Found sslmode={sslmode or '<missing>'}"
+              )
+              sys.exit(1)
+
+          role_name = username.split(".", 1)[0] if username else ""
+          if role_name != "ingestor_writer":
+              print(
+                  "DATABASE_URL preflight failed: workflow must use ingestor_writer role. "
+                  f"Found username={username or '<missing>'}"
+              )
+              sys.exit(1)
+          PY
+
+      - name: Compute and upsert metrics
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_AGENT:-}" ] && [ "${DISPATCH_AGENT}" != "${AGENT_KEY}" ]; then
+            echo "Skipping metrics for matrix agent=${AGENT_KEY}; dispatch requested agent=${DISPATCH_AGENT}"
+            exit 0
+          fi
+          METRICS_LIMIT_VAL="${DISPATCH_METRICS_LIMIT:-${METRICS_LIMIT:-900}}"
+          mkdir -p run_logs
+          echo "Running metrics agent=${AGENT_KEY} limit=${METRICS_LIMIT_VAL}"
+          python -m ghapi_crawler.metrics --agent "${AGENT_KEY}" --limit "${METRICS_LIMIT_VAL}" 2>&1 | tee "run_logs/metrics-${AGENT_KEY}.log"

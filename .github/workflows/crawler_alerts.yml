@@ -1,0 +1,27 @@
+name: GHAPI Crawler Alerts
+
+on:
+  workflow_run:
+    workflows: ["GHAPI Crawler"]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  alert:
+    if: ${{ github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Notify owner/channel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GHAPI_MONITOR_OWNER: ${{ vars.GHAPI_MONITOR_OWNER }}
+          GHAPI_MONITOR_ALERT_WEBHOOK_URL: ${{ secrets.GHAPI_MONITOR_ALERT_WEBHOOK_URL }}
+        run: |
+          python scripts/notify_crawler_failure.py
