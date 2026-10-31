@@ -169,3 +169,21 @@ manual-only.
 
 If Supabase SQL Editor returns `ERROR: VACUUM cannot run inside a transaction block`, that is expected.
 Run vacuum from `psql` instead, one table per command, using a table-owner/admin role.
+
+## Tests
+
+Run the unit tests:
+
+```bash
+.venv/bin/python -m pytest -q tests -m "not integration"
+```
+
+The integration tests start a temporary Postgres cluster. They need the Postgres binaries
+(`initdb`, `pg_ctl`, `psql`). Set `PG_BIN_DIR` to the folder that holds them:
+
+```bash
+PG_BIN_DIR=/opt/homebrew/bin .venv/bin/python -m pytest -q tests
+```
+
+The tests never use the database URLs in `.env`. A fixture in `tests/conftest.py` stops the
+`.env` load and removes `INGESTOR_WRITER_URL` and `DATABASE_URL` before each test.

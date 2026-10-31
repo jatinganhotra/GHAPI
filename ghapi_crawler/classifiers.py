@@ -132,6 +132,8 @@ LANGUAGE_BY_EXTENSION = {
     ".mod": "Go",
     ".js": "JavaScript",
     ".jsx": "JavaScript",
+    ".mjs": "JavaScript",
+    ".cjs": "JavaScript",
     ".ts": "TypeScript",
     ".tsx": "TypeScript",
     ".mts": "TypeScript",
@@ -178,11 +180,21 @@ LANGUAGE_BY_EXTENSION = {
     ".sass": "Sass",
     ".less": "Less",
     ".xml": "XML",
+    ".csproj": "XML",
+    ".props": "XML",
+    ".targets": "XML",
     ".ini": "INI",
     ".cfg": "INI",
     ".ipynb": "Jupyter Notebook",
     ".vue": "Vue",
     ".svelte": "Svelte",
+    ".astro": "Astro",
+    ".dart": "Dart",
+    ".ex": "Elixir",
+    ".exs": "Elixir",
+    ".lean": "Lean",
+    ".as": "ActionScript",
+    ".mdx": "Markdown",
     ".bazel": "Starlark",
     ".bzl": "Starlark",
     ".gradle": "Groovy",
@@ -204,6 +216,47 @@ LANGUAGE_BY_SPECIAL_FILENAME = {
     "vagrantfile": "Ruby",
     "podfile": "Ruby",
     "procfile": "Procfile",
+}
+
+NON_CODE_EXTENSIONS = {
+    ".txt",
+    ".csv",
+    ".tsv",
+    ".tab",
+    ".log",
+    ".lock",
+    ".example",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".bmp",
+    ".svg",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".tgz",
+    ".tar",
+    ".7z",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+}
+
+NON_CODE_SPECIAL_FILENAMES = {
+    "license",
+    "copying",
+    "notice",
+    "authors",
+    "contributors",
+    "changelog",
 }
 
 SHEBANG_LANGUAGE_PATTERNS = (
@@ -270,19 +323,26 @@ def detect_language(path: str, patch: str | None = None) -> str:
     if lower_name in LANGUAGE_BY_SPECIAL_FILENAME:
         return LANGUAGE_BY_SPECIAL_FILENAME[lower_name]
 
+    if lower_name in NON_CODE_SPECIAL_FILENAMES or lower_name.startswith("readme"):
+        return "Non-code"
+
     full_suffix = "".join(PurePosixPath(normalized).suffixes).lower()
     if full_suffix and full_suffix in LANGUAGE_BY_EXTENSION:
         return LANGUAGE_BY_EXTENSION[full_suffix]
+    if full_suffix and full_suffix in NON_CODE_EXTENSIONS:
+        return "Non-code"
 
     suffix = PurePosixPath(normalized).suffix.lower()
     if suffix in LANGUAGE_BY_EXTENSION:
         return LANGUAGE_BY_EXTENSION[suffix]
+    if suffix in NON_CODE_EXTENSIONS:
+        return "Non-code"
 
     patch_hint = _language_from_patch_hints(patch)
     if patch_hint:
         return patch_hint
 
-    return "Other"
+    return "Unknown"
 
 
 def extension_of(path: str) -> str:
