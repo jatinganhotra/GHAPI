@@ -187,3 +187,11 @@ PG_BIN_DIR=/opt/homebrew/bin .venv/bin/python -m pytest -q tests
 
 The tests never use the database URLs in `.env`. A fixture in `tests/conftest.py` stops the
 `.env` load and removes `INGESTOR_WRITER_URL` and `DATABASE_URL` before each test.
+
+## Maintenance tools
+
+- `python -m ghapi_crawler.backfill_eval --start <ISO> --end <ISO>` estimates the cost of a
+  discovery backfill before you run it: shard count, truncated shards, and search page requests.
+  Run `--help` for all the options.
+- `python -m ghapi_crawler.repo_cleanup --json` lists repositories that the repo filters reject.
+  Add `--apply` to delete them and their pull requests.
