@@ -70,6 +70,14 @@ TABLES: tuple[str, ...] = (
 )
 
 
+def _redact(database_url: str) -> str:
+    """Remove credentials from a URL-style or keyword-style DSN before logging."""
+    import re
+
+    text = re.sub(r"(password\s*=\s*)\S+", r"\1***", database_url, flags=re.IGNORECASE)
+    return re.sub(r"(://)[^@/]*@", r"\1***@", text)
+
+
 class VerifyError(RuntimeError):
     """An exported table does not have the same row count as its source table."""
 
@@ -101,8 +109,7 @@ def export(
     try:
         print("Loading postgres extension ...", flush=True)
         con.execute("INSTALL postgres; LOAD postgres;")
-        safe_url = database_url.split("@")[-1]  # strip credentials before logging
-        print(f"Attaching Postgres source (...@{safe_url}) ...", flush=True)
+        print(f"Attaching Postgres source ({_redact(database_url)}) ...", flush=True)
         con.execute(f"ATTACH '{database_url}' AS src (TYPE postgres, READ_ONLY)")
 
         counts: dict[str, int] = {}

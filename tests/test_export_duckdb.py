@@ -75,3 +75,10 @@ def test_export_verify_fails_when_source_changes(temp_postgres, tmp_path, monkey
     monkeypatch.setattr(duckdb, "connect", lambda path: _GrowingConnection(real_connect(path)))
     with pytest.raises(export_duckdb.VerifyError, match="repositories"):
         real_export(tmp_path / "snap.duckdb", temp_postgres, verify=True)
+
+
+def test_redact_hides_passwords():
+    url = export_duckdb._redact("postgresql://user.ref:s3cret@host:5432/postgres?sslmode=require")
+    kw = export_duckdb._redact("host=h port=5432 user=u password=s3cret dbname=d")
+    assert "s3cret" not in url and "host:5432" in url
+    assert "s3cret" not in kw and "dbname=d" in kw
