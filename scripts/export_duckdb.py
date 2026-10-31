@@ -70,7 +70,23 @@ TABLES: tuple[str, ...] = (
 )
 
 
-def export(output_path: Path, database_url: str, tables: tuple[str, ...] = TABLES) -> None:
+class VerifyError(RuntimeError):
+    """An exported table does not have the same row count as its source table."""
+
+
+def export(
+    output_path: Path,
+    database_url: str,
+    tables: tuple[str, ...] = TABLES,
+    verify: bool = False,
+) -> dict[str, int]:
+    """Copy each table into DuckDB. Return the exported row count per table.
+
+    With verify=True, count each source table again after the copy. Raise
+    VerifyError if any count differs. A difference usually means that the
+    crawler wrote rows during the export. Pause the crawler and run again.
+    Do not delete source rows unless verification passes.
+    """
     try:
         import duckdb
     except ImportError:
@@ -89,14 +105,27 @@ def export(output_path: Path, database_url: str, tables: tuple[str, ...] = TABLE
         print(f"Attaching Postgres source (...@{safe_url}) ...", flush=True)
         con.execute(f"ATTACH '{database_url}' AS src (TYPE postgres, READ_ONLY)")
 
+        counts: dict[str, int] = {}
         for table in tables:
             print(f"  Exporting {table} ...", flush=True)
             con.execute(f"CREATE TABLE {table} AS SELECT * FROM src.public.{table}")
             n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            counts[table] = n
             print(f"    {n:,} rows")
+
+        if verify:
+            mismatches = []
+            for table, n in counts.items():
+                src_n = con.execute(f"SELECT COUNT(*) FROM src.public.{table}").fetchone()[0]
+                if src_n != n:
+                    mismatches.append(f"{table}: exported {n:,}, source {src_n:,}")
+            if mismatches:
+                raise VerifyError("Row counts differ:\n  " + "\n  ".join(mismatches))
+            print(f"Verified: all {len(counts)} tables match the source row counts.")
 
         size_mb = output_path.stat().st_size / 1e6
         print(f"\nDone. Wrote {output_path} ({size_mb:.1f} MB)")
+        return counts
     finally:
         con.close()
 
@@ -115,6 +144,12 @@ def parse_args() -> argparse.Namespace:
         help="Postgres source URL. Defaults to the crawler's own DATABASE_URL "
         "/ INGESTOR_WRITER_URL resolution (ghapi_crawler.config.load_settings).",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After the copy, compare each table's row count with the source. "
+        "Exit with status 1 if any count differs.",
+    )
     return parser.parse_args()
 
 
@@ -124,7 +159,10 @@ def main() -> None:
     output_path = Path(args.output)
     if not output_path.is_absolute():
         output_path = REPO_ROOT / output_path
-    export(output_path=output_path, database_url=database_url)
+    try:
+        export(output_path=output_path, database_url=database_url, verify=args.verify)
+    except VerifyError as exc:
+        sys.exit(f"Verification failed. {exc}")
 
 
 if __name__ == "__main__":

@@ -153,7 +153,14 @@ from crawl-expansion-202607. Both reuse the crawler's own `DATABASE_URL` /
 .venv/bin/pip install duckdb==1.2.2 pytz   # not in requirements.txt; the crawler itself never needs them
 .venv/bin/python scripts/export_duckdb.py                # full export -> snapshots/ghapi_latest.duckdb
 .venv/bin/python scripts/merge_duckdb.py                  # cheap incremental top-up of that file
+.venv/bin/python scripts/export_duckdb.py --verify \
+    --output snapshots/ghapi_2026-11-15.duckdb            # dated export with a row-count check
 ```
+
+`--verify` counts each source table again after the copy. If any count differs, the script
+exits with status 1. A difference usually means that the crawler wrote rows during the export.
+Pause the crawler and run the export again. **Delete rows from the source database only after a
+verified export.**
 
 `.github/workflows/duckdb_snapshot.yml` is a `workflow_dispatch`-only stub
 that runs the export, uploads it as a workflow artifact, and (by default)
