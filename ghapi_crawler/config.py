@@ -152,6 +152,9 @@ class Settings:
     github_cache_redis_key_prefix: str
     github_graphql_enabled: bool
     github_graphql_batch_size: int
+    # Discovery skips an agent while it has at least this many unhydrated PRs
+    # (0 = no limit). This keeps the free-tier database small.
+    discovery_max_pending: int = 0
 
 
 def load_settings() -> Settings:
@@ -185,6 +188,7 @@ def load_settings() -> Settings:
         discovery_max_window_hours=max(
             int(_env_with_default("DISCOVERY_MAX_WINDOW_HOURS", "4")), 0
         ),
+        discovery_max_pending=max(int(_env_with_default("DISCOVERY_MAX_PENDING", "0")), 0),
         max_shard_depth=max(int(_env_with_default("MAX_SHARD_DEPTH", "20")), 1),
         repo_allowlist_patterns=_parse_patterns(
             os.getenv("REPO_ALLOWLIST") or _read_allowlist_file("REPO_ALLOWLIST_FILE")

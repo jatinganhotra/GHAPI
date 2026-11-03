@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from ghapi_crawler.agents import AGENTS, AgentDefinition
 from ghapi_crawler.config import Settings, load_settings
 from ghapi_crawler.db import (
+    count_unhydrated_pull_requests,
     ensure_tracked_agents,
     get_discovery_cursor,
     open_connection,
@@ -110,6 +111,25 @@ class DiscoveryJob:
         hydration_shard_index: int = 0,
         hydration_shard_count: int = 1,
     ) -> dict[str, int]:
+        max_pending = self.settings.discovery_max_pending
+        if max_pending > 0:
+            stored_key = agent.db_key or agent.key
+            with open_connection(self.settings) as conn:
+                pending = count_unhydrated_pull_requests(conn, stored_key)
+            if pending >= max_pending:
+                print(
+                    f"[discovery] agent={agent.key} skipped: {pending} unhydrated PRs "
+                    f"for agent_key={stored_key} (DISCOVERY_MAX_PENDING={max_pending})"
+                )
+                return {
+                    "shards": 0,
+                    "truncated_shards": 0,
+                    "items_seen": 0,
+                    "items_persisted": 0,
+                    "items_filtered_out": 0,
+                    "skipped_pending": pending,
+                }
+
         now = dt.datetime.now(dt.timezone.utc)
         # Optional absolute end-bound: pin a closed historical window by never
         # walking past discovery_end_utc (e.g. the Codex/Claude overlap window).
@@ -476,7 +496,8 @@ def main() -> None:
         print(
             f"- {key}: shards={values['shards']} truncated={values['truncated_shards']} "
             f"items_seen={values['items_seen']} persisted={values['items_persisted']} "
-            f"filtered_out={values['items_filtered_out']} cursor={values['new_cursor_epoch']}"
+            f"filtered_out={values['items_filtered_out']} cursor={values.get('new_cursor_epoch', 'unchanged')}"
+            + (f" skipped_pending={values['skipped_pending']}" if 'skipped_pending' in values else "")
         )
 
 

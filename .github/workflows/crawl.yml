@@ -271,6 +271,9 @@ jobs:
       DISPATCH_END_DATE: ${{ github.event.inputs.end_date }}
       DISCOVERY_OVERLAP_MINUTES: ${{ vars.GHAPI_DISCOVERY_OVERLAP_MINUTES }}
       DISCOVERY_MAX_WINDOW_HOURS: ${{ vars.GHAPI_DISCOVERY_MAX_WINDOW_HOURS }}
+      # Discovery skips an agent while it has this many unhydrated PRs, so the
+      # free-tier database stays small. Set the variable to 0 for no limit.
+      DISCOVERY_MAX_PENDING: ${{ vars.GHAPI_DISCOVERY_MAX_PENDING || '15000' }}
       HYDRATION_LIMIT: ${{ vars.GHAPI_HYDRATION_LIMIT }}
       METRICS_LIMIT: ${{ vars.GHAPI_METRICS_LIMIT }}
       CODEX_HYDRATION_SHARDS: ${{ vars.GHAPI_CODEX_HYDRATION_SHARDS }}

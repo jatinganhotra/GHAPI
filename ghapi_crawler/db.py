@@ -192,6 +192,18 @@ def is_pull_request_pruned(conn: Connection, github_pr_id: int) -> bool:
         return cur.fetchone() is not None
 
 
+def count_unhydrated_pull_requests(conn: Connection, agent_key: str) -> int:
+    """Number of stored PRs of an agent that are not hydrated yet."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM pull_requests WHERE agent_key = %s AND last_hydrated_at IS NULL",
+            (agent_key,),
+        )
+        row = cur.fetchone()
+    value = row["count"] if isinstance(row, dict) else row[0]
+    return int(value or 0)
+
+
 def upsert_pull_request_from_search_item(
     conn: Connection, agent: AgentDefinition, item: dict[str, Any]
 ) -> bool:

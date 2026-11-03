@@ -86,6 +86,8 @@ Required secrets:
 Useful repository variables:
 
 - `GHAPI_START_DATE` (ISO-8601 UTC, used when an agent has no discovery cursor)
+- `GHAPI_DISCOVERY_END_DATE` (ISO-8601 UTC, discovery never stores PRs created after it)
+- `GHAPI_DISCOVERY_MAX_PENDING` (default `15000`; see "Limit the discovery backlog")
 - `GHAPI_HYDRATION_LIMIT` (default fallback: `900`; adaptive planner may increase/decrease for Codex unless dispatch overrides are set)
 - `GHAPI_METRICS_LIMIT` (default fallback: `900`)
 - `GHAPI_CODEX_HYDRATION_SHARDS` (default fallback: `6`, max supported by workflow matrix: `12`)
@@ -182,15 +184,31 @@ PRs. The hydration target (`--target`) and the agent cap (`--agent-cap`) count t
 hydrated. So the dated DuckDB files together hold the full crawl, and each PR is in the file of
 the export that deleted it.
 
-`.github/workflows/duckdb_snapshot.yml` is a `workflow_dispatch`-only stub
-that runs the export, uploads it as a workflow artifact, and (by default)
-publishes it as a dated GitHub Release asset (`ghapi-snapshot-YYYY-MM`) —
-monthly snapshots live as release assets, not git-committed files, to keep
-this public repo's history free of large binaries. No `schedule:` trigger
-yet; see the plan doc for why (waiting on the DB-target decision) and note
-that once live this can run on a free public-repo schedule, unlike the
-private parent repo's equivalent (`update_duckdb.yml`), which must stay
-manual-only.
+### Daily snapshot workflow
+
+`.github/workflows/duckdb_snapshot.yml` runs every day at 05:30 UTC, and you can also start it by
+hand. It does these steps:
+
+1. It exports the database to `ghapi_<UTC time stamp>.duckdb` with `--verify`.
+2. It pushes the file with Git LFS to a private data repository. The secret `SNAPSHOT_REPO`
+   (`owner/name`) names the repository. The secret `SNAPSHOT_DEPLOY_KEY` holds the private key
+   of a deploy key with write access to it.
+3. It runs `prune_after_export.py --apply`, but only if the push succeeded.
+
+The free tier holds 500 MB. With one token, the crawl adds about 55 MB a day, so the prune must
+run every day. The workflow never puts data in this public repository: it makes no workflow
+artifact and no release. A manual run with `prune` set to false exports and pushes, and deletes
+nothing.
+
+A DELETE does not make the database files smaller. Postgres uses the free space again for new
+rows, so the size stops at its highest point.
+
+### Limit the discovery backlog
+
+Discovery stores PRs faster than hydration can process them. Unhydrated PRs stay in Postgres,
+because the prune deletes only hydrated PRs. Set `DISCOVERY_MAX_PENDING` (workflow variable
+`GHAPI_DISCOVERY_MAX_PENDING`, default `15000` in `crawl.yml`) to limit the backlog. Discovery
+then skips an agent while that agent has at least this many unhydrated PRs. `0` means no limit.
 
 ## Supabase vacuum note
 

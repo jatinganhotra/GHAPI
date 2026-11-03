@@ -1,36 +1,63 @@
 name: DuckDB snapshot
 
-# crawl-expansion-202607 stub: exports the crawler's Postgres tables to
-# DuckDB and (optionally) publishes the result as a dated monthly GitHub
-# Release asset. workflow_dispatch-only for now — wiring this to run
-# periodically depends on the DB-target decision recorded in
-# plans/crawl_expansion_20260704.md (parent repo, section c). Once that
-# lands, restoring a `schedule:` trigger here costs nothing: GHAPI is
-# public, so its Actions minutes are free, unlike the private
-# SWEAgentsInTheWild repo where the equivalent workflow
-# (.github/workflows/update_duckdb.yml) must stay manual-only.
+# Every day, this workflow does these steps:
+#   1. It exports the crawl database to a DuckDB file with a UTC time stamp in its name.
+#   2. It pushes the file with Git LFS to a private data repository.
+#   3. It deletes the exported PRs from Postgres (scripts/prune_after_export.py).
+#
+# The Supabase free tier holds 500 MB. A crawl with one token adds about 55 MB
+# a day, so the prune must run every day. Step 3 runs only after the push in
+# step 2 succeeds. After step 3, the data repository has the only copy of the
+# deleted PRs.
+#
+# The data never goes to this public repository: no workflow artifact, and no
+# release.
+#
+# Secrets in the Crawl environment:
+#   INGESTOR_WRITER_URL  the crawl database
+#   SNAPSHOT_REPO        owner/name of the private data repository
+#   SNAPSHOT_DEPLOY_KEY  private SSH key of a deploy key with write access to SNAPSHOT_REPO
 on:
+  schedule:
+    - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
-      publish_monthly_snapshot:
-        description: "Also publish this export as a dated GitHub Release asset (ghapi-snapshot-YYYY-MM)"
+      prune:
+        description: "Delete the exported PRs from Postgres after the push"
         required: false
         type: boolean
         default: true
 
 permissions:
-  contents: write  # gh release create/upload in the last step needs this
+  contents: read
+
+concurrency:
+  group: duckdb-snapshot
+  cancel-in-progress: false
 
 jobs:
-  export:
+  snapshot:
     runs-on: ubuntu-latest
     environment: Crawl
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       INGESTOR_WRITER_URL: ${{ secrets.INGESTOR_WRITER_URL }}
-      LEGACY_GHAPI_DATABASE_URL: ${{ secrets.GHAPI_DATABASE_URL }}
-      DISPATCH_PUBLISH_MONTHLY: ${{ github.event.inputs.publish_monthly_snapshot }}
+      DATABASE_URL: ${{ secrets.INGESTOR_WRITER_URL }}
+      SNAPSHOT_REPO: ${{ secrets.SNAPSHOT_REPO }}
+      SNAPSHOT_DEPLOY_KEY: ${{ secrets.SNAPSHOT_DEPLOY_KEY }}
+      PRUNE: ${{ github.event_name == 'schedule' || github.event.inputs.prune == 'true' }}
     steps:
+      - name: Check secrets
+        run: |
+          missing=0
+          for name in INGESTOR_WRITER_URL SNAPSHOT_REPO SNAPSHOT_DEPLOY_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::The secret ${name} is not set in the Crawl environment."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -44,56 +71,96 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt duckdb==1.2.2 pytz
+          pip install -r requirements.txt duckdb==1.2.2 pytz==2026.2
 
-      - name: Validate environment
+      - name: Database size before
         run: |
-          if [ -z "${INGESTOR_WRITER_URL:-}" ] && [ -n "${LEGACY_GHAPI_DATABASE_URL:-}" ]; then
-            echo "INGESTOR_WRITER_URL not set; falling back to GHAPI_DATABASE_URL"
-            echo "INGESTOR_WRITER_URL=${LEGACY_GHAPI_DATABASE_URL}" >> "$GITHUB_ENV"
+          python - <<'PY'
+          import os, psycopg
+          with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+              size = conn.execute("SELECT pg_database_size(current_database())").fetchone()[0]
+          print(f"Database size: {size / 1048576:.0f} MB")
+          if size > 400 * 1048576:
+              print("::warning::The database is larger than 400 MB. The free tier limit is 500 MB.")
+          PY
+
+      - name: Export
+        run: |
+          set -uo pipefail
+          name="ghapi_$(date -u +%Y%m%dT%H%M%SZ).duckdb"
+          out="${RUNNER_TEMP}/${name}"
+          python scripts/export_duckdb.py --verify --output "$out"
+          rc=$?
+          case "$rc" in
+            0) echo "The export is verified." ;;
+            3) echo "::notice::Row counts changed during the export because the crawler wrote rows. The prune checks each PR, so it is safe." ;;
+            *) echo "::error::The export failed (status $rc). Nothing was deleted."
+               exit 1 ;;
+          esac
+          echo "SNAPSHOT_NAME=${name}" >> "$GITHUB_ENV"
+          echo "SNAPSHOT_FILE=${out}" >> "$GITHUB_ENV"
+
+      - name: Push to the data repository
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SNAPSHOT_DEPLOY_KEY" > ~/.ssh/snapshot_key
+          chmod 600 ~/.ssh/snapshot_key
+          # GitHub's ed25519 host key, from https://api.github.com/meta
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/snapshot_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+
+          GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "git@github.com:${SNAPSHOT_REPO}.git" "${RUNNER_TEMP}/data"
+          cd "${RUNNER_TEMP}/data"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git lfs install --local
+          if ! git rev-parse --quiet --verify HEAD >/dev/null; then
+            git symbolic-ref HEAD refs/heads/main  # empty repository
           fi
-          if [ -z "${INGESTOR_WRITER_URL:-}${LEGACY_GHAPI_DATABASE_URL:-}" ]; then
-            echo "Missing secret INGESTOR_WRITER_URL (or legacy GHAPI_DATABASE_URL)."
-            echo "This workflow needs a live DB target for the crawl to write to first —"
-            echo "see plans/crawl_expansion_20260704.md (parent repo) section (c) for the"
-            echo "DB-target decision this is waiting on. Nothing to export yet; exiting."
+          branch="$(git symbolic-ref --short HEAD)"
+          if ! grep -qs 'duckdb filter=lfs' .gitattributes; then
+            git lfs track "*.duckdb"
+            git add .gitattributes
+          fi
+
+          mkdir -p crawl
+          if [ -e "crawl/${SNAPSHOT_NAME}" ]; then
+            echo "::error::crawl/${SNAPSHOT_NAME} is already in the data repository. Nothing was deleted."
             exit 1
           fi
-
-      - name: Export DuckDB snapshot
-        run: |
-          set -euo pipefail
-          mkdir -p snapshots
-          python scripts/export_duckdb.py --output snapshots/ghapi_latest.duckdb
-
-      - name: Upload snapshot artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ghapi-duckdb-snapshot
-          path: snapshots/ghapi_latest.duckdb
-          retention-days: 90
-          if-no-files-found: error
-
-      - name: Publish monthly snapshot release
-        if: ${{ github.event.inputs.publish_monthly_snapshot != 'false' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          TAG="ghapi-snapshot-$(date -u +%Y-%m)"
-          MONTH_LABEL="$(date -u +%Y-%m)"
-          DATED="snapshots/ghapi_${MONTH_LABEL}.duckdb"
-          cp snapshots/ghapi_latest.duckdb "$DATED"
-
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; replacing its asset"
-            gh release delete-asset "$TAG" "$(basename "$DATED")" \
-              --repo "$GITHUB_REPOSITORY" --yes || true
-            gh release upload "$TAG" "$DATED" --repo "$GITHUB_REPOSITORY"
-          else
-            echo "Creating release $TAG"
-            gh release create "$TAG" "$DATED" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "GHAPI monthly snapshot ${MONTH_LABEL}" \
-              --notes "Automated monthly DuckDB snapshot of the GHAPI crawler's Postgres tables (all tracked agents; see ghapi_crawler/agents.py). Generated by .github/workflows/duckdb_snapshot.yml. Not a git-tracked file — fetch the asset from this release."
+          cp "$SNAPSHOT_FILE" "crawl/${SNAPSHOT_NAME}"
+          git add "crawl/${SNAPSHOT_NAME}"
+          if ! git lfs ls-files --name-only | grep -qx "crawl/${SNAPSHOT_NAME}"; then
+            echo "::error::Git LFS does not track crawl/${SNAPSHOT_NAME}. Nothing was deleted."
+            exit 1
           fi
+          git commit --quiet -m "Add ${SNAPSHOT_NAME}"
+          # The Git LFS pre-push hook uploads the file. If the upload fails, the push fails.
+          git push --quiet origin "HEAD:${branch}"
+          remote="$(git ls-remote origin "refs/heads/${branch}" | cut -f1)"
+          if [ "$remote" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The data repository does not have the new commit. Nothing was deleted."
+            exit 1
+          fi
+          echo "Pushed crawl/${SNAPSHOT_NAME} to the data repository ($(du -h "$SNAPSHOT_FILE" | cut -f1))."
+
+      - name: Prune
+        if: ${{ env.PRUNE == 'true' }}
+        run: python scripts/prune_after_export.py --snapshot "$SNAPSHOT_FILE" --apply
+
+      - name: Database size after
+        if: ${{ env.PRUNE == 'true' }}
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+              size = conn.execute("SELECT pg_database_size(current_database())").fetchone()[0]
+          print(f"Database size: {size / 1048576:.0f} MB")
+          print("A DELETE does not make the files smaller. New rows use the free space again.")
+          PY
+
+      - name: Remove the key
+        if: ${{ always() }}
+        run: rm -f ~/.ssh/snapshot_key
