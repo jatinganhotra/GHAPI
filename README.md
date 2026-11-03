@@ -159,8 +159,27 @@ from crawl-expansion-202607. Both reuse the crawler's own `DATABASE_URL` /
 
 `--verify` counts each source table again after the copy. If any count differs, the script
 exits with status 1. A difference usually means that the crawler wrote rows during the export.
-Pause the crawler and run the export again. **Delete rows from the source database only after a
-verified export.**
+
+### Free space after an export
+
+The crawl runs on the Supabase free tier (500 MB). After each export,
+`scripts/prune_after_export.py` deletes the exported, hydrated PRs from Postgres:
+
+```bash
+.venv/bin/python scripts/prune_after_export.py --snapshot snapshots/ghapi_2026-11-15.duckdb          # dry run: counts only
+.venv/bin/python scripts/prune_after_export.py --snapshot snapshots/ghapi_2026-11-15.duckdb --apply  # delete
+```
+
+The script deletes a PR only if it is hydrated and the DuckDB file has the same
+`last_hydrated_at` for it. The rows of that PR in the per-PR tables go too. Issues that the
+file has and that no remaining PR links to go too. The script keeps unhydrated PRs,
+repositories, and `discovery_state`. Because the check is per PR, the crawler can run during
+the export and the prune.
+
+Each deleted PR keeps one row in `pruned_pull_requests` (migration 012). Discovery skips those
+PRs. The hydration target (`--target`) and the agent cap (`--agent-cap`) count them as
+hydrated. So the dated DuckDB files together hold the full crawl, and each PR is in the file of
+the export that deleted it.
 
 `.github/workflows/duckdb_snapshot.yml` is a `workflow_dispatch`-only stub
 that runs the export, uploads it as a workflow artifact, and (by default)

@@ -215,7 +215,9 @@ class DiscoveryJob:
                             items_filtered_out += 1
                             continue
 
-                        upsert_pull_request_from_search_item(conn, agent, item)
+                        if not upsert_pull_request_from_search_item(conn, agent, item):
+                            items_filtered_out += 1  # pruned after a local export
+                            continue
                         items_persisted += 1
                         items_since_last_flush += 1
 

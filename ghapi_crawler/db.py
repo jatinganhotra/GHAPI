@@ -182,12 +182,29 @@ def upsert_repository_from_search_item(
     return _ensure_repository(conn, full_name, api_url)
 
 
+def is_pull_request_pruned(conn: Connection, github_pr_id: int) -> bool:
+    """True if the PR left the database after a local export (migration 012)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM pruned_pull_requests WHERE github_pr_id = %s",
+            (github_pr_id,),
+        )
+        return cur.fetchone() is not None
+
+
 def upsert_pull_request_from_search_item(
     conn: Connection, agent: AgentDefinition, item: dict[str, Any]
-) -> None:
+) -> bool:
+    """Insert or update a PR from a search result.
+
+    Return False, and write nothing, if the PR is in pruned_pull_requests. A
+    local DuckDB export already holds that PR in its hydrated state.
+    """
+    github_pr_id = int(item["id"])
+    if is_pull_request_pruned(conn, github_pr_id):
+        return False
     repo_full_name = upsert_repository_from_search_item(conn, item)
     pr_block = item.get("pull_request") or {}
-    github_pr_id = int(item["id"])
     pr_number = int(item["number"])
     draft = bool(item.get("draft", False))
     created_at = parse_github_datetime(item.get("created_at"))
@@ -264,7 +281,7 @@ def upsert_pull_request_from_search_item(
             update_values,
         )
         if cur.fetchone():
-            return
+            return True
 
         cur.execute(
             """
@@ -314,6 +331,7 @@ def upsert_pull_request_from_search_item(
             """,
             insert_values,
         )
+    return True
 
 
 def list_pull_requests_for_hydration(
@@ -388,11 +406,15 @@ def claim_pull_requests_for_hydration(
             if created_to is not None:
                 cap_where.append("created_at < %s")
                 cap_params.append(created_to)
+            # Pruned PRs (migration 012) were hydrated, so they count too.
+            pruned_where = [w for w in cap_where if w != "last_hydrated_at IS NOT NULL"]
+            cap_sql = " AND ".join(cap_where)
+            pruned_sql = " AND ".join(pruned_where)
             where_parts.append(
-                "(SELECT COUNT(*) FROM pull_requests WHERE "
-                + " AND ".join(cap_where)
-                + ") < %s"
+                f"((SELECT COUNT(*) FROM pull_requests WHERE {cap_sql})"
+                f" + (SELECT COUNT(*) FROM pruned_pull_requests WHERE {pruned_sql})) < %s"
             )
+            params.extend(cap_params)
             params.extend(cap_params)
             params.append(agent_cap)
 

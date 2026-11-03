@@ -234,10 +234,16 @@ class HydrationJob:
         if window_to is not None:
             where_parts.append("created_at < %s")
             params.append(window_to)
+        # Pruned PRs (migration 012) were hydrated, so they count too.
+        pruned_where = [w for w in where_parts if w != "last_hydrated_at IS NOT NULL"] or ["TRUE"]
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM pull_requests WHERE " + " AND ".join(where_parts),
-                tuple(params),
+                "SELECT (SELECT COUNT(*) FROM pull_requests WHERE "
+                + " AND ".join(where_parts)
+                + ") + (SELECT COUNT(*) FROM pruned_pull_requests WHERE "
+                + " AND ".join(pruned_where)
+                + ") AS count",
+                tuple(params) + tuple(params),
             )
             row = cur.fetchone()
             already_hydrated = int(row["count"]) if row else 0

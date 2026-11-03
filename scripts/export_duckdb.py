@@ -67,6 +67,7 @@ TABLES: tuple[str, ...] = (
     "issue_timeline_events",
     "discovery_state",
     "pr_metrics",
+    "pruned_pull_requests",
 )
 
 
