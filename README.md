@@ -158,7 +158,8 @@ from crawl-expansion-202607. Both reuse the crawler's own `DATABASE_URL` /
 ```
 
 `--verify` counts each source table again after the copy. If any count differs, the script
-exits with status 1. A difference usually means that the crawler wrote rows during the export.
+exits with status 3. A difference usually means that the crawler wrote rows during the export.
+The file is still complete for each PR that it holds. Other errors exit with status 1.
 
 ### Free space after an export
 

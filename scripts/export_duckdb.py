@@ -156,7 +156,7 @@ def parse_args() -> argparse.Namespace:
         "--verify",
         action="store_true",
         help="After the copy, compare each table's row count with the source. "
-        "Exit with status 1 if any count differs.",
+        "Exit with status 3 if any count differs.",
     )
     return parser.parse_args()
 
@@ -170,7 +170,10 @@ def main() -> None:
     try:
         export(output_path=output_path, database_url=database_url, verify=args.verify)
     except VerifyError as exc:
-        sys.exit(f"Verification failed. {exc}")
+        # Exit status 3 (not 1) so that callers can tell count drift from a failed export.
+        # The file is complete. prune_after_export.py checks each PR, so it is safe on this file.
+        print(f"Verification failed. {exc}", file=sys.stderr)
+        sys.exit(3)
 
 
 if __name__ == "__main__":
