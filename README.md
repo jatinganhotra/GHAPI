@@ -97,6 +97,7 @@ Useful repository variables:
 - `GHAPI_SEARCH_DELAY_SECONDS`
 - `GHAPI_SEARCH_MAX_RETRIES`
 - `GHAPI_MONITOR_OWNER` (GitHub mention for alert ownership, for example `@jatinganhotra` or `@org/team`)
+- `GHAPI_SELF_DISPATCH` (repository variable, not an environment variable; `true` turns on the run chain; see "Run chain")
 
 Failure alert behavior:
 
@@ -212,6 +213,20 @@ Discovery stores PRs faster than hydration can process them. Unhydrated PRs stay
 because the prune deletes only hydrated PRs. Set `DISCOVERY_MAX_PENDING` (workflow variable
 `GHAPI_DISCOVERY_MAX_PENDING`, default `15000` in `crawl.yml`) to limit the backlog. Discovery
 then skips an agent while that agent has at least this many unhydrated PRs. `0` means no limit.
+
+### Run chain
+
+GitHub can stop starting the scheduled runs of a repository. When that happens, set the
+repository variable `GHAPI_SELF_DISPATCH` to `true`. The `chain` job at the end of `crawl.yml`
+then does these steps:
+
+1. It starts `duckdb_snapshot.yml` if the last snapshot run started more than 23 hours ago.
+2. It waits until 60 minutes after its own run started.
+3. It starts the next crawl run with `workflow_dispatch`.
+
+The job uses `GITHUB_TOKEN`, so its API calls do not use the crawler token's rate limit. To stop
+the chain, set the variable to `false` or cancel the run. A dispatch with the `agent` input
+does not start the chain.
 
 ### Sample days for a large agent
 
