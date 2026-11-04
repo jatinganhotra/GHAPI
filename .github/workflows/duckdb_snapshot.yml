@@ -91,8 +91,10 @@ jobs:
           set -uo pipefail
           name="ghapi_$(date -u +%Y%m%dT%H%M%SZ).duckdb"
           out="${RUNNER_TEMP}/${name}"
-          python scripts/export_duckdb.py --verify --output "$out"
-          rc=$?
+          # Actions runs this step with "bash -e". Without "|| rc=$?", a status
+          # of 3 stops the step here, before the case below can accept it.
+          rc=0
+          python scripts/export_duckdb.py --verify --output "$out" || rc=$?
           case "$rc" in
             0) echo "The export is verified." ;;
             3) echo "::notice::Row counts changed during the export because the crawler wrote rows. The prune checks each PR, so it is safe." ;;
