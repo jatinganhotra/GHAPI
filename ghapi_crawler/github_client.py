@@ -17,6 +17,9 @@ from ghapi_crawler.config import Settings
 SEARCH_API_MIN_DELAY_SECONDS = 2.1
 
 
+# Rate-limit waits allowed for one request before it fails.
+MAX_RATE_LIMIT_WAITS = 60
+
 class GitHubClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -281,7 +284,16 @@ class GitHubClient:
             return cached
 
         retries = self.settings.search_max_retries
-        for attempt in range(1, retries + 1):
+        # A rate-limit wait is not a failed attempt. Many jobs share one
+        # user's limits (search: 30 calls a minute), so waits are normal and
+        # must not use up the retries for real errors.
+        attempt = 1
+        rate_limit_waits = 0
+        while attempt <= retries:
+            if rate_limit_waits > MAX_RATE_LIMIT_WAITS:
+                raise RuntimeError(
+                    f"GitHub rate limit did not clear after {MAX_RATE_LIMIT_WAITS} waits: {url}"
+                )
             try:
                 headers: dict[str, str] = {}
                 if accept_header:
@@ -302,8 +314,10 @@ class GitHubClient:
                 ):
                     reset_epoch = int(response.headers.get("X-RateLimit-Reset", "0"))
                     sleep_for = max(reset_epoch - int(time.time()), 1) + 1
+                    rate_limit_waits += 1
                     print(
-                        f"Rate limited by GitHub, sleeping {sleep_for}s (attempt {attempt}/{retries})"
+                        f"Rate limited by GitHub, sleeping {sleep_for}s "
+                        f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})"
                     )
                     time.sleep(sleep_for)
                     continue
@@ -312,11 +326,12 @@ class GitHubClient:
                     if self._should_treat_as_secondary_rate_limit(response):
                         sleep_for = self._secondary_rate_limit_sleep_seconds(
                             response=response,
-                            attempt=attempt,
+                            attempt=rate_limit_waits + 1,
                         )
+                        rate_limit_waits += 1
                         print(
                             f"GitHub secondary rate limit detected, sleeping {sleep_for}s "
-                            f"(attempt {attempt}/{retries})"
+                            f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})"
                         )
                         time.sleep(sleep_for)
                         continue
@@ -348,6 +363,7 @@ class GitHubClient:
                     f"Sleeping {backoff}s"
                 )
                 time.sleep(backoff)
+                attempt += 1
 
         raise RuntimeError("Unreachable retry loop")
 

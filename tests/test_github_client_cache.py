@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
 import requests
 
 from ghapi_crawler.config import Settings
@@ -238,3 +239,44 @@ def test_search_requests_respect_minimum_delay(monkeypatch):
 
     assert dummy.calls == 1
     assert any(value >= 2.1 for value in sleeps)
+
+
+def test_rate_limit_waits_do_not_use_up_retries(monkeypatch):
+    import ghapi_crawler.github_client as gc
+
+    monkeypatch.setattr(gc.time, "sleep", lambda seconds: None)
+    limited = {"Retry-After": "1"}
+    responses = [_ErrorResponse(403, {"message": "secondary rate limit"}, limited) for _ in range(5)]
+    responses.append(_ErrorResponse(200, {"total_count": 7, "items": []}))
+    client = GitHubClient(_settings(search_max_retries=2, github_cache_enabled=False))
+    client.session = _SequenceSession(responses)
+
+    payload = client.search_pull_requests(
+        query="is:pr",
+        created_from=dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc),
+        created_to=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc),
+        page=1,
+        per_page=1,
+    )
+    assert payload["total_count"] == 7
+    assert client.session.calls == 6
+
+
+def test_rate_limit_waits_have_a_limit(monkeypatch):
+    import ghapi_crawler.github_client as gc
+
+    monkeypatch.setattr(gc.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(gc, "MAX_RATE_LIMIT_WAITS", 3)
+    limited = {"Retry-After": "1"}
+    responses = [_ErrorResponse(403, {"message": "secondary rate limit"}, limited) for _ in range(10)]
+    client = GitHubClient(_settings(search_max_retries=2, github_cache_enabled=False))
+    client.session = _SequenceSession(responses)
+
+    with pytest.raises(RuntimeError, match="did not clear after 3 waits"):
+        client.search_pull_requests(
+            query="is:pr",
+            created_from=dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc),
+            created_to=dt.datetime(2026, 10, 2, tzinfo=dt.timezone.utc),
+            page=1,
+            per_page=1,
+        )
