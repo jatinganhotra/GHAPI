@@ -1,14 +1,13 @@
 name: GHAPI Crawler
 
 on:
-  # Schedule disabled 2026-06-02: both populations crossed the 100k-hydrated
-  # in-window target, the equal-window backfill is complete, and Supabase has
-  # been backed up + wiped to reset the free tier. No automatic runs while the
-  # database is empty. Restore the cron once we decide on the next backfill
-  # window (or migrate off Supabase free tier). workflow_dispatch is preserved
-  # so manual runs remain possible for testing.
-  # schedule:
-  #   - cron: "0 * * * *"
+  # Schedule restored 2026-11-03 for the October 2026 crawl. The Crawl
+  # environment variables set the window (GHAPI_START_DATE,
+  # GHAPI_DISCOVERY_END_DATE), the Codex/Claude cap, the day strides, and
+  # GHAPI_SKIP_DISCOVERY=false. duckdb_snapshot.yml exports and prunes the
+  # database every day.
+  schedule:
+    - cron: "0 * * * *"
   #
   # crawl-resume-202607 fresh-window campaign (Jatin, 2026-07-05): a fresh
   # discovery window covering codex/claude_head AND the 7 new peer agents
