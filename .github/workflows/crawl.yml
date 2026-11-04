@@ -274,6 +274,8 @@ jobs:
       # Discovery skips an agent while it has this many unhydrated PRs, so the
       # free-tier database stays small. Set the variable to 0 for no limit.
       DISCOVERY_MAX_PENDING: ${{ vars.GHAPI_DISCOVERY_MAX_PENDING || '15000' }}
+      # Per agent: discover only every Nth day of the window, e.g. codex=6,claude_head=8.
+      DISCOVERY_DAY_STRIDES: ${{ vars.GHAPI_DISCOVERY_DAY_STRIDES }}
       HYDRATION_LIMIT: ${{ vars.GHAPI_HYDRATION_LIMIT }}
       METRICS_LIMIT: ${{ vars.GHAPI_METRICS_LIMIT }}
       CODEX_HYDRATION_SHARDS: ${{ vars.GHAPI_CODEX_HYDRATION_SHARDS }}

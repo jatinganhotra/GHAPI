@@ -34,6 +34,23 @@ def _parse_optional_utc_timestamp(value: str | None) -> dt.datetime | None:
     return _parse_utc_timestamp(value)
 
 
+def _parse_day_strides(value: str | None) -> tuple[tuple[str, int], ...]:
+    """Parse "codex=6,claude_head=8" into (("codex", 6), ("claude_head", 8))."""
+    pairs: list[tuple[str, int]] = []
+    for part in (value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, sep, raw = part.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"DISCOVERY_DAY_STRIDES: expected agent=days, got {part!r}")
+        stride = int(raw)
+        if stride < 1:
+            raise ValueError(f"DISCOVERY_DAY_STRIDES: days must be 1 or more, got {part!r}")
+        pairs.append((key.strip(), stride))
+    return tuple(pairs)
+
+
 def _parse_patterns(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
@@ -155,6 +172,13 @@ class Settings:
     # Discovery skips an agent while it has at least this many unhydrated PRs
     # (0 = no limit). This keeps the free-tier database small.
     discovery_max_pending: int = 0
+    # Per agent: discover only every Nth UTC day, counted from
+    # discovery_start_utc (day 0, day N, day 2N, ...). Agents not listed
+    # discover every day.
+    discovery_day_strides: tuple[tuple[str, int], ...] = ()
+
+    def day_stride(self, agent_key: str) -> int:
+        return dict(self.discovery_day_strides).get(agent_key, 1)
 
 
 def load_settings() -> Settings:
@@ -189,6 +213,7 @@ def load_settings() -> Settings:
             int(_env_with_default("DISCOVERY_MAX_WINDOW_HOURS", "4")), 0
         ),
         discovery_max_pending=max(int(_env_with_default("DISCOVERY_MAX_PENDING", "0")), 0),
+        discovery_day_strides=_parse_day_strides(os.getenv("DISCOVERY_DAY_STRIDES")),
         max_shard_depth=max(int(_env_with_default("MAX_SHARD_DEPTH", "20")), 1),
         repo_allowlist_patterns=_parse_patterns(
             os.getenv("REPO_ALLOWLIST") or _read_allowlist_file("REPO_ALLOWLIST_FILE")

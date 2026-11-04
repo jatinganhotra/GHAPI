@@ -149,6 +149,17 @@ class DiscoveryJob:
                 - dt.timedelta(minutes=self.settings.discovery_overlap_minutes),
             )
 
+        stride = self.settings.day_stride(agent.key)
+        if stride > 1:
+            window_start, day_end = sampled_day_window(
+                self.settings.discovery_start_utc, prior_cursor, window_start, stride
+            )
+            now = min(now, day_end)
+            print(
+                f"[discovery] agent={agent.key} sampled day {_fmt(window_start)} -> {_fmt(now)} "
+                f"(every {stride} days from {_fmt(self.settings.discovery_start_utc)})"
+            )
+
         if self.settings.discovery_max_window_hours > 0:
             cap = window_start + dt.timedelta(hours=self.settings.discovery_max_window_hours)
             if now > cap:
@@ -287,8 +298,11 @@ class DiscoveryJob:
                         f"(shard {i + 1}/{len(shards)})"
                     )
 
-        # Use max seen created_at as a safe cursor so truncated shards do not skip data.
-        if items_seen == 0:
+        # Without truncated shards, the run saw every PR up to the window end, so
+        # the cursor moves to the end. (With the max seen created_at, a sparse
+        # agent in a capped window asked for the same window on every run.)
+        # With truncated shards, use the max seen created_at so no data is skipped.
+        if items_seen == 0 or truncated_shards == 0:
             next_cursor = now
         else:
             next_cursor = max_created
@@ -389,6 +403,27 @@ class DiscoveryJob:
             per_page=1,
         )
         return int(payload.get("total_count", 0))
+
+
+def sampled_day_window(
+    origin: dt.datetime,
+    prior_cursor: dt.datetime | None,
+    window_start: dt.datetime,
+    stride: int,
+) -> tuple[dt.datetime, dt.datetime]:
+    """Return (start, end) of the discovery window inside one sampled day.
+
+    The sampled days are origin + k * stride days (k = 0, 1, 2, ...). If the
+    cursor is inside a sampled day, the window continues that day from
+    window_start. Otherwise the window is the next sampled day.
+    """
+    day = dt.timedelta(days=1)
+    position = max(prior_cursor if prior_cursor is not None else origin, origin)
+    sampled = origin + ((position - origin) // day // stride) * stride * day
+    if position >= sampled + day:
+        sampled += stride * day
+        return sampled, sampled + day
+    return max(window_start, sampled), sampled + day
 
 
 def _select_agents(include_agents: Iterable[str] | None) -> list[AgentDefinition]:

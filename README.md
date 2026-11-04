@@ -88,6 +88,7 @@ Useful repository variables:
 - `GHAPI_START_DATE` (ISO-8601 UTC, used when an agent has no discovery cursor)
 - `GHAPI_DISCOVERY_END_DATE` (ISO-8601 UTC, discovery never stores PRs created after it)
 - `GHAPI_DISCOVERY_MAX_PENDING` (default `15000`; see "Limit the discovery backlog")
+- `GHAPI_DISCOVERY_DAY_STRIDES` (for example `codex=6,claude_head=8`; see "Sample days for a large agent")
 - `GHAPI_HYDRATION_LIMIT` (default fallback: `900`; adaptive planner may increase/decrease for Codex unless dispatch overrides are set)
 - `GHAPI_METRICS_LIMIT` (default fallback: `900`)
 - `GHAPI_CODEX_HYDRATION_SHARDS` (default fallback: `6`, max supported by workflow matrix: `12`)
@@ -190,9 +191,11 @@ the export that deleted it.
 hand. It does these steps:
 
 1. It exports the database to `ghapi_<UTC time stamp>.duckdb` with `--verify`.
-2. It pushes the file with Git LFS to a private data repository. The secret `SNAPSHOT_REPO`
-   (`owner/name`) names the repository. The secret `SNAPSHOT_DEPLOY_KEY` holds the private key
-   of a deploy key with write access to it.
+2. It pushes the file to a private data repository as a plain git file, with no Git LFS. The
+   secret `SNAPSHOT_REPO` (`owner/name`) names the repository. The secret `SNAPSHOT_DEPLOY_KEY`
+   holds the private key of a deploy key with write access to it. GitHub refuses files over
+   100 MB, so a larger export goes in 90 MB parts (`<name>.part00`, `.part01`, ...). Join them
+   with `cat <name>.part* > <name>`, then compare with `sha256sum -c <name>.sha256`.
 3. It runs `prune_after_export.py --apply`, but only if the push succeeded.
 
 The free tier holds 500 MB. With one token, the crawl adds about 55 MB a day, so the prune must
@@ -209,6 +212,13 @@ Discovery stores PRs faster than hydration can process them. Unhydrated PRs stay
 because the prune deletes only hydrated PRs. Set `DISCOVERY_MAX_PENDING` (workflow variable
 `GHAPI_DISCOVERY_MAX_PENDING`, default `15000` in `crawl.yml`) to limit the backlog. Discovery
 then skips an agent while that agent has at least this many unhydrated PRs. `0` means no limit.
+
+### Sample days for a large agent
+
+Set `DISCOVERY_DAY_STRIDES` (workflow variable `GHAPI_DISCOVERY_DAY_STRIDES`), for example
+`codex=6,claude_head=8`. Discovery for a listed agent then covers only every Nth UTC day,
+counted from the start date: day 0, day N, day 2N, and so on. Agents that are not listed cover
+every day. Use it with the agent cap to spread a capped agent's sample across the whole window.
 
 ## Supabase vacuum note
 

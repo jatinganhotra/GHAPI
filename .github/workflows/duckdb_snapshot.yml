@@ -2,7 +2,9 @@ name: DuckDB snapshot
 
 # Every day, this workflow does these steps:
 #   1. It exports the crawl database to a DuckDB file with a UTC time stamp in its name.
-#   2. It pushes the file with Git LFS to a private data repository.
+#   2. It pushes the file to a private data repository, as a plain git file
+#      (no Git LFS). GitHub refuses files over 100 MB, so a larger export goes
+#      in 90 MB parts (name.duckdb.part00, .part01, ...). Join them with cat.
 #   3. It deletes the exported PRs from Postgres (scripts/prune_after_export.py).
 #
 # The Supabase free tier holds 500 MB. A crawl with one token adds about 55 MB
@@ -111,40 +113,40 @@ jobs:
           echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/snapshot_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
 
-          GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "git@github.com:${SNAPSHOT_REPO}.git" "${RUNNER_TEMP}/data"
+          # A partial clone: commits and trees only, no old files. The new file is the only blob to send.
+          git clone --quiet --depth 1 --filter=blob:none --no-checkout "git@github.com:${SNAPSHOT_REPO}.git" "${RUNNER_TEMP}/data"
           cd "${RUNNER_TEMP}/data"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git lfs install --local
-          if ! git rev-parse --quiet --verify HEAD >/dev/null; then
+          if git rev-parse --quiet --verify HEAD >/dev/null; then
+            git sparse-checkout set --no-cone "/crawl/${SNAPSHOT_NAME}*"
+            git checkout --quiet
+            if git ls-tree -r --name-only HEAD crawl/ | grep -q "^crawl/${SNAPSHOT_NAME}"; then
+              echo "::error::crawl/${SNAPSHOT_NAME} is already in the data repository. Nothing was deleted."
+              exit 1
+            fi
+          else
             git symbolic-ref HEAD refs/heads/main  # empty repository
           fi
           branch="$(git symbolic-ref --short HEAD)"
-          if ! grep -qs 'duckdb filter=lfs' .gitattributes; then
-            git lfs track "*.duckdb"
-            git add .gitattributes
-          fi
 
           mkdir -p crawl
-          if [ -e "crawl/${SNAPSHOT_NAME}" ]; then
-            echo "::error::crawl/${SNAPSHOT_NAME} is already in the data repository. Nothing was deleted."
-            exit 1
+          size=$(stat -c %s "$SNAPSHOT_FILE")
+          if [ "$size" -gt $((90 * 1024 * 1024)) ]; then
+            split -b 90m -d -a 2 "$SNAPSHOT_FILE" "crawl/${SNAPSHOT_NAME}.part"
+          else
+            cp "$SNAPSHOT_FILE" "crawl/${SNAPSHOT_NAME}"
           fi
-          cp "$SNAPSHOT_FILE" "crawl/${SNAPSHOT_NAME}"
-          git add "crawl/${SNAPSHOT_NAME}"
-          if ! git lfs ls-files --name-only | grep -qx "crawl/${SNAPSHOT_NAME}"; then
-            echo "::error::Git LFS does not track crawl/${SNAPSHOT_NAME}. Nothing was deleted."
-            exit 1
-          fi
+          (cd "$(dirname "$SNAPSHOT_FILE")" && sha256sum "$(basename "$SNAPSHOT_FILE")") > "crawl/${SNAPSHOT_NAME}.sha256"
+          git add crawl/
           git commit --quiet -m "Add ${SNAPSHOT_NAME}"
-          # The Git LFS pre-push hook uploads the file. If the upload fails, the push fails.
           git push --quiet origin "HEAD:${branch}"
           remote="$(git ls-remote origin "refs/heads/${branch}" | cut -f1)"
           if [ "$remote" != "$(git rev-parse HEAD)" ]; then
             echo "::error::The data repository does not have the new commit. Nothing was deleted."
             exit 1
           fi
-          echo "Pushed crawl/${SNAPSHOT_NAME} to the data repository ($(du -h "$SNAPSHOT_FILE" | cut -f1))."
+          echo "Pushed crawl/${SNAPSHOT_NAME} ($((size / 1048576)) MB) to the data repository."
 
       - name: Prune
         if: ${{ env.PRUNE == 'true' }}
