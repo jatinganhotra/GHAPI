@@ -95,6 +95,9 @@ class HydrationJob:
                         created_to=window_to,
                         agent_cap=agent_cap,
                     )
+                    # End the read transaction. Otherwise it stays open during the
+                    # PR's GitHub calls, and its table locks block DDL (a migration).
+                    conn.commit()
                 except Exception as exc:
                     if not _is_db_connection_error(exc):
                         raise
