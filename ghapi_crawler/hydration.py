@@ -354,7 +354,14 @@ class HydrationJob:
         pr_comments = self.client.list_pull_request_issue_comments(owner, repo, pr_number)
         review_comments = self.client.list_pull_request_review_comments(owner, repo, pr_number)
         pr_timeline = self.client.list_pull_request_timeline_events(owner, repo, pr_number)
+        body_candidates = issue_link_candidates_from_pr_body(repo_full_name, pr_detail.get("body"))
+        timeline_candidates = issue_link_candidates_from_timeline_events(pr_timeline)
+        link_candidates = body_candidates + timeline_candidates
+        linked_issues = self._fetch_linked_issues(link_candidates)
 
+        # All GitHub calls are done. The writes below make one short transaction.
+        # A GitHub call inside the transaction can wait up to an hour for the
+        # rate limit, and the rows it locked would block the other jobs.
         upsert_pull_request_detail(conn, github_pr_id=github_pr_id, detail=pr_detail)
         replace_pull_request_files(
             conn=conn,
@@ -395,12 +402,11 @@ class HydrationJob:
                 f"via {signal_source}"
             )
 
-        self._hydrate_linked_issues(
+        self._store_linked_issues(
             conn=conn,
             github_pr_id=github_pr_id,
-            repo_full_name=repo_full_name,
-            pr_body=pr_detail.get("body"),
-            pr_timeline=pr_timeline,
+            link_candidates=link_candidates,
+            linked_issues=linked_issues,
         )
 
     def _refresh_repository_metadata(
@@ -445,29 +451,24 @@ class HydrationJob:
                 tree_truncated=tree_truncated,
                 loc_estimate=loc_estimate,
             )
+            # Commit now. The PR's GitHub calls come next, and they can wait up
+            # to an hour for the rate limit. An open transaction would lock this
+            # repository row for all that time, and discovery would block on it.
+            conn.commit()
         except Exception as exc:
             conn.rollback()
             print(f"Repository metadata upsert failed for {repo_full_name}: {exc}")
             return False
         return True
 
-    def _hydrate_linked_issues(
-        self,
-        conn,
-        github_pr_id: int,
-        repo_full_name: str,
-        pr_body: str | None,
-        pr_timeline: list[dict[str, Any]],
-    ) -> None:
-        body_candidates = issue_link_candidates_from_pr_body(repo_full_name, pr_body)
-        timeline_candidates = issue_link_candidates_from_timeline_events(pr_timeline)
-        all_candidates = body_candidates + timeline_candidates
-        union_matches = issues_from_link_candidates(all_candidates)
-
-        links: list[dict[str, Any]] = []
-        hydrated_issues: dict[tuple[str, int], int] = {}
-
-        for issue_repo_full_name, issue_number in sorted(union_matches):
+    def _fetch_linked_issues(
+        self, link_candidates: list[Any]
+    ) -> list[tuple[str, int, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]]:
+        """Fetch each linked issue with its comments and timeline. No DB writes."""
+        fetched = []
+        for issue_repo_full_name, issue_number in sorted(
+            issues_from_link_candidates(link_candidates)
+        ):
             issue_owner, issue_repo = _split_repo_full_name(issue_repo_full_name)
             try:
                 issue = self.client.get_issue(issue_owner, issue_repo, issue_number)
@@ -480,7 +481,32 @@ class HydrationJob:
             # Skip pull requests returned from /issues endpoint.
             if issue.get("pull_request"):
                 continue
+            issue_comments = self.client.list_issue_comments(
+                issue_owner, issue_repo, issue_number
+            )
+            issue_timeline = self.client.list_issue_timeline_events(
+                issue_owner, issue_repo, issue_number
+            )
+            fetched.append(
+                (issue_repo_full_name, issue_number, issue, issue_comments, issue_timeline)
+            )
+        return fetched
 
+    def _store_linked_issues(
+        self,
+        conn,
+        github_pr_id: int,
+        link_candidates: list[Any],
+        linked_issues: list[
+            tuple[str, int, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]
+        ],
+    ) -> None:
+        links: list[dict[str, Any]] = []
+        hydrated_issues: dict[tuple[str, int], int] = {}
+
+        for issue_repo_full_name, issue_number, issue, issue_comments, issue_timeline in (
+            linked_issues
+        ):
             github_issue_id = upsert_issue(
                 conn=conn,
                 repo_full_name=issue_repo_full_name,
@@ -488,17 +514,10 @@ class HydrationJob:
                 body_word_count=word_count(issue.get("body")),
             )
             hydrated_issues[(issue_repo_full_name, issue_number)] = github_issue_id
-
-            issue_comments = self.client.list_issue_comments(
-                issue_owner, issue_repo, issue_number
-            )
-            issue_timeline = self.client.list_issue_timeline_events(
-                issue_owner, issue_repo, issue_number
-            )
             replace_issue_comments(conn, github_issue_id, issue_comments)
             replace_issue_timeline_events(conn, github_issue_id, issue_timeline)
 
-        for candidate in all_candidates:
+        for candidate in link_candidates:
             key = (candidate.repo_full_name, candidate.issue_number)
             github_issue_id = hydrated_issues.get(key)
             if github_issue_id is None:
