@@ -296,6 +296,14 @@ jobs:
       SKIP_DISCOVERY: ${{ github.event.inputs.skip_discovery || vars.GHAPI_SKIP_DISCOVERY || 'true' }}
 
     steps:
+      # GitHub cancels a job at timeout-minutes (300). Then the run shows as
+      # cancelled, and metrics and chain do not run. After GHAPI_STOP_AT, the
+      # crawler starts no new page, PR, or rate-limit wait, and it exits with
+      # success (ghapi_crawler/stop_time.py). The last 30 minutes are for the PR
+      # in progress and the steps after the crawl.
+      - name: Set the stop time
+        run: echo "GHAPI_STOP_AT=$(( $(date +%s) + 270 * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 

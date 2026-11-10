@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from ghapi_crawler import stop_time
 from ghapi_crawler.classifiers import count_hunks, detect_language, extension_of, is_test_file, word_count
 from ghapi_crawler.config import Settings, load_settings
 from ghapi_crawler.db import (
@@ -83,6 +84,11 @@ class HydrationJob:
             )
 
             while processed < limit:
+                try:
+                    stop_time.check()
+                except stop_time.StopTimeReached as exc:
+                    print(f"[hydration] {exc}. No new PR is claimed.")
+                    break
                 try:
                     claimed = claim_pull_requests_for_hydration(
                         conn=conn,
@@ -169,6 +175,21 @@ class HydrationJob:
                             f"limit={limit} shard={shard_index}/{shard_count - 1} "
                             f"elapsed={time.monotonic() - t0:.0f}s"
                         )
+                except stop_time.StopTimeReached as exc:
+                    # Not a hydration error: the PR stays unhydrated, with no
+                    # error text, and the next run claims it again.
+                    conn = self._rollback_or_reconnect(
+                        conn=conn,
+                        repo_full_name=repo_full_name,
+                        pr_number=pr_number,
+                        context="stop time",
+                    )
+                    processed -= 1
+                    print(
+                        f"[hydration] {exc}. {repo_full_name}#{pr_number} stays "
+                        "unhydrated for the next run."
+                    )
+                    break
                 except Exception as exc:
                     conn = self._rollback_or_reconnect(
                         conn=conn,
@@ -845,6 +866,7 @@ def main() -> None:
             "--shard-index must be in "
             f"[0, {args.shard_count - 1}]; received {args.shard_index}"
         )
+    stop_time.announce("hydration")
     settings = load_settings()
     job = HydrationJob(settings)
     summary = job.run(

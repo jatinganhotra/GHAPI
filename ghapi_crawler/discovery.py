@@ -9,6 +9,7 @@ from math import ceil
 from typing import Iterable
 from urllib.parse import urlparse
 
+from ghapi_crawler import stop_time
 from ghapi_crawler.agents import AGENTS, AgentDefinition
 from ghapi_crawler.config import Settings, load_settings
 from ghapi_crawler.db import (
@@ -213,6 +214,9 @@ class DiscoveryJob:
 
         with open_connection(self.settings) as conn:
             for i, shard in enumerate(shards):
+                # After the stop time, end here. The saved cursor is at the last
+                # finished shard, so the next run searches this shard again.
+                stop_time.check()
                 if shard.truncated:
                     truncated_shards += 1
                 pages = min(ceil(shard.total_count / self.settings.search_per_page), 10)
@@ -224,6 +228,7 @@ class DiscoveryJob:
                 )
 
                 for page in range(1, pages + 1):
+                    stop_time.check()
                     payload = self.client.search_pull_requests(
                         query=agent.discovery_query,
                         created_from=shard.start,
@@ -518,13 +523,20 @@ def main() -> None:
     settings = load_settings()
     if settings.discovery_end_utc is not None:
         print(f"[discovery] end-bound active: walk capped at {settings.discovery_end_utc.isoformat()}")
+    stop_time.announce("discovery")
     job = DiscoveryJob(settings)
-    summary = job.run(
-        include_agents=args.agent,
-        hydration_batch_size=args.hydration_batch_size,
-        hydration_shard_index=args.hydration_shard_index,
-        hydration_shard_count=args.hydration_shard_count,
-    )
+    try:
+        summary = job.run(
+            include_agents=args.agent,
+            hydration_batch_size=args.hydration_batch_size,
+            hydration_shard_index=args.hydration_shard_index,
+            hydration_shard_count=args.hydration_shard_count,
+        )
+    except stop_time.StopTimeReached as exc:
+        # Each finished page is committed, and the cursor is at the last
+        # finished shard. The next run continues from there.
+        print(f"[discovery] {exc}. Discovery stops here. The next run continues it.")
+        return
 
     print("Discovery summary:")
     for key, values in summary.items():

@@ -229,6 +229,20 @@ The job uses `GITHUB_TOKEN`, so its API calls do not use the crawler token's rat
 the chain, set the variable to `false` or cancel the run. A dispatch with the `agent` input
 does not start the chain.
 
+### Stop time
+
+GitHub cancels a crawl job after 300 minutes (`timeout-minutes`). Then the run shows as
+cancelled, and `metrics` and `chain` do not run. To prevent this, the first step of each crawl
+job sets `GHAPI_STOP_AT` to 270 minutes after the job starts. After that time:
+
+- discovery requests no new page,
+- hydration claims no new PR,
+- the GitHub client starts no rate-limit wait that ends after that time.
+
+The job then exits with success. The PR in progress stays unhydrated, with no error, and the
+next run claims it again. The discovery cursor stays at the last finished shard. Outside the
+workflow, `GHAPI_STOP_AT` is not set, and nothing changes.
+
 ### Sample days for a large agent
 
 Set `DISCOVERY_DAY_STRIDES` (workflow variable `GHAPI_DISCOVERY_DAY_STRIDES`), for example

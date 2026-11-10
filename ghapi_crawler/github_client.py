@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import requests
 
+from ghapi_crawler import stop_time
 from ghapi_crawler.config import Settings
 
 SEARCH_API_MIN_DELAY_SECONDS = 2.1
@@ -314,6 +315,7 @@ class GitHubClient:
                 ):
                     reset_epoch = int(response.headers.get("X-RateLimit-Reset", "0"))
                     sleep_for = max(reset_epoch - int(time.time()), 1) + 1
+                    stop_time.check(sleep_for)
                     rate_limit_waits += 1
                     print(
                         f"Rate limited by GitHub, sleeping {sleep_for}s "
@@ -328,6 +330,7 @@ class GitHubClient:
                             response=response,
                             attempt=rate_limit_waits + 1,
                         )
+                        stop_time.check(sleep_for)
                         rate_limit_waits += 1
                         print(
                             f"GitHub secondary rate limit detected, sleeping {sleep_for}s "
