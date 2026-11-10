@@ -5,7 +5,7 @@ on:
   # environment variables set the window (GHAPI_START_DATE,
   # GHAPI_DISCOVERY_END_DATE), the Codex/Claude cap, the day strides, and
   # GHAPI_SKIP_DISCOVERY=false. duckdb_snapshot.yml exports and prunes the
-  # database every day.
+  # database twice a day.
   schedule:
     - cron: "0 * * * *"
   #
@@ -1133,15 +1133,16 @@ jobs:
           echo "Running metrics agent=${AGENT_KEY} limit=${METRICS_LIMIT_VAL}"
           python -m ghapi_crawler.metrics --agent "${AGENT_KEY}" --limit "${METRICS_LIMIT_VAL}" 2>&1 | tee "run_logs/metrics-${AGENT_KEY}.log"
 
-  # GitHub has not started the scheduled runs of this repository since June
-  # (checked 2026-11-04: no "schedule" event for either cron). This job starts
-  # the next run instead, so the crawl does not depend on the scheduler.
+  # GitHub started no scheduled run of this repository from June to
+  # 2026-11-04. The schedule works again, but GitHub often starts a run hours
+  # late. This job is a backup: it starts the next run, so the crawl does not
+  # depend on the scheduler.
   #   - A workflow_dispatch from GITHUB_TOKEN starts a new run. Its API calls
   #     have their own limit, so they do not use the crawler token's budget.
   #   - The next run starts at least 60 minutes after this run started, the
   #     same rate as the hourly cron.
   #   - The job also starts duckdb_snapshot.yml when its last run is more than
-  #     23 hours old, so the export and prune still run every day.
+  #     11 hours old, so the export and prune still run twice a day.
   #   - Set the repository variable GHAPI_SELF_DISPATCH to anything other than
   #     "true" to stop the chain. A cancelled run also stops it.
   #   - A dispatch for one agent (the "agent" input) does not start the chain.
@@ -1165,7 +1166,7 @@ jobs:
           if [ -n "$last" ]; then
             age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
           fi
-          if [ "$age" -gt $((23 * 3600)) ]; then
+          if [ "$age" -gt $((11 * 3600)) ]; then
             gh workflow run duckdb_snapshot.yml --ref "${{ github.ref_name }}"
             echo "Started the snapshot. The last snapshot run started ${age}s ago."
           else

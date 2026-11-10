@@ -1,16 +1,17 @@
 name: DuckDB snapshot
 
-# Every day, this workflow does these steps:
+# Twice a day, this workflow does these steps:
 #   1. It exports the crawl database to a DuckDB file with a UTC time stamp in its name.
 #   2. It pushes the file to a private data repository, as a plain git file
 #      (no Git LFS). GitHub refuses files over 100 MB, so a larger export goes
 #      in 90 MB parts (name.duckdb.part00, .part01, ...). Join them with cat.
 #   3. It deletes the exported PRs from Postgres (scripts/prune_after_export.py).
 #
-# The Supabase free tier holds 500 MB. A crawl with one token adds about 55 MB
-# a day, so the prune must run every day. Step 3 runs only after the push in
-# step 2 succeeds. After step 3, the data repository has the only copy of the
-# deleted PRs.
+# The Supabase free tier holds 500 MB. A crawl with one token added about
+# 170 MB a day in November 2026, so the prune must run at least every day.
+# GitHub often starts a scheduled run hours late. Two runs a day keep a margin.
+# Step 3 runs only after the push in step 2 succeeds. After step 3, the data
+# repository has the only copy of the deleted PRs.
 #
 # The data never goes to this public repository: no workflow artifact, and no
 # release.
@@ -21,7 +22,7 @@ name: DuckDB snapshot
 #   SNAPSHOT_DEPLOY_KEY  private SSH key of a deploy key with write access to SNAPSHOT_REPO
 on:
   schedule:
-    - cron: "30 5 * * *"
+    - cron: "30 5,17 * * *"
   workflow_dispatch:
     inputs:
       prune:

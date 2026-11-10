@@ -186,10 +186,10 @@ PRs. The hydration target (`--target`) and the agent cap (`--agent-cap`) count t
 hydrated. So the dated DuckDB files together hold the full crawl, and each PR is in the file of
 the export that deleted it.
 
-### Daily snapshot workflow
+### Snapshot workflow
 
-`.github/workflows/duckdb_snapshot.yml` runs every day at 05:30 UTC, and you can also start it by
-hand. It does these steps:
+`.github/workflows/duckdb_snapshot.yml` runs twice a day, at 05:30 and 17:30 UTC. You can also
+start it by hand. It does these steps:
 
 1. It exports the database to `ghapi_<UTC time stamp>.duckdb` with `--verify`.
 2. It pushes the file to a private data repository as a plain git file, with no Git LFS. The
@@ -199,8 +199,9 @@ hand. It does these steps:
    with `cat <name>.part* > <name>`, then compare with `sha256sum -c <name>.sha256`.
 3. It runs `prune_after_export.py --apply`, but only if the push succeeded.
 
-The free tier holds 500 MB. With one token, the crawl adds about 55 MB a day, so the prune must
-run every day. The workflow never puts data in this public repository: it makes no workflow
+The free tier holds 500 MB. With one token, the crawl added about 170 MB a day in November 2026
+(about 13 KB for each hydrated PR), so the prune must run at least every day. GitHub often
+starts a scheduled run hours late, and two runs a day keep a margin. The workflow never puts data in this public repository: it makes no workflow
 artifact and no release. A manual run with `prune` set to false exports and pushes, and deletes
 nothing.
 
@@ -220,7 +221,7 @@ GitHub can stop starting the scheduled runs of a repository. When that happens, 
 repository variable `GHAPI_SELF_DISPATCH` to `true`. The `chain` job at the end of `crawl.yml`
 then does these steps:
 
-1. It starts `duckdb_snapshot.yml` if the last snapshot run started more than 23 hours ago.
+1. It starts `duckdb_snapshot.yml` if the last snapshot run started more than 11 hours ago.
 2. It waits until 60 minutes after its own run started.
 3. It starts the next crawl run with `workflow_dispatch`.
 
