@@ -3,7 +3,7 @@ name: GHAPI Crawler
 on:
   # Schedule restored 2026-11-03 for the October 2026 crawl. The Crawl
   # environment variables set the window (GHAPI_START_DATE,
-  # GHAPI_DISCOVERY_END_DATE), the Codex/Claude cap, the day strides, and
+  # GHAPI_DISCOVERY_END_DATE), the agent cap, the sample windows, and
   # GHAPI_SKIP_DISCOVERY=false. duckdb_snapshot.yml exports and prunes the
   # database twice a day.
   schedule:
@@ -15,6 +15,7 @@ on:
   # at ~100K hydrated each via vars.GHAPI_HYDRATION_AGENT_CAP (see the
   # "Crawl GitHub and upsert Postgres" step below), peers uncapped since a
   # full most-recent month per peer tops out at ~110K (Cursor) anyway.
+  # Since 2026-11 the cap also applies to cursor (HYDRATION_CAP_AGENTS).
   # Required dispatch inputs per agent, since none of this should happen
   # implicitly:
   #   - codex / claude_head: reset_cursor=true (their cursors currently sit
@@ -273,19 +274,22 @@ jobs:
       # Discovery skips an agent while it has this many unhydrated PRs, so the
       # free-tier database stays small. Set the variable to 0 for no limit.
       DISCOVERY_MAX_PENDING: ${{ vars.GHAPI_DISCOVERY_MAX_PENDING || '15000' }}
-      # Per agent: discover only every Nth day of the window, e.g. codex=6,claude_head=8.
-      DISCOVERY_DAY_STRIDES: ${{ vars.GHAPI_DISCOVERY_DAY_STRIDES }}
+      # Per agent: discover only sample windows of the period, e.g.
+      # codex=6 (one day in every 6 days) or claude_head=4h/124h (4 hours in
+      # every 124 hours). GHAPI_DISCOVERY_DAY_STRIDES is the old name, and it
+      # takes days only.
+      DISCOVERY_SAMPLES: ${{ vars.GHAPI_DISCOVERY_SAMPLES || vars.GHAPI_DISCOVERY_DAY_STRIDES }}
       HYDRATION_LIMIT: ${{ vars.GHAPI_HYDRATION_LIMIT }}
       METRICS_LIMIT: ${{ vars.GHAPI_METRICS_LIMIT }}
       CODEX_HYDRATION_SHARDS: ${{ vars.GHAPI_CODEX_HYDRATION_SHARDS }}
       CLAUDE_HYDRATION_SHARDS: ${{ vars.GHAPI_CLAUDE_HYDRATION_SHARDS }}
       ADAPTIVE_HYDRATION_ENABLED: ${{ vars.GHAPI_ADAPTIVE_HYDRATION_ENABLED }}
       HYDRATION_AGENT_TARGET: ${{ vars.GHAPI_HYDRATION_AGENT_TARGET }}
-      # Hard per-agent corpus cap (crawl-resume-202607): only applied to
-      # codex/claude below, never to peer agents, even if this var is left
-      # set — see the "Crawl GitHub and upsert Postgres" step's HYDRATION_AGENT
-      # gate.
+      # Hard per-agent corpus cap. The "Crawl GitHub and upsert Postgres" step
+      # applies it only to the agents in HYDRATION_CAP_AGENTS (stored agent
+      # keys, comma-separated).
       HYDRATION_AGENT_CAP: ${{ vars.GHAPI_HYDRATION_AGENT_CAP }}
+      HYDRATION_CAP_AGENTS: ${{ vars.GHAPI_HYDRATION_CAP_AGENTS || 'codex,claude,cursor' }}
       DISPATCH_HYDRATION_LIMIT: ${{ github.event.inputs.hydration_limit }}
       DISPATCH_METRICS_LIMIT: ${{ github.event.inputs.metrics_limit }}
       DISPATCH_START_DATE: ${{ github.event.inputs.start_date }}
@@ -814,13 +818,11 @@ jobs:
           fi
 
           HYDRATION_TARGET_VAL="${HYDRATION_AGENT_TARGET:-}"
-          # agent_cap is the crawl-resume-202607 Codex/Claude campaign budget
-          # control — only ever passed for those two, even if
-          # HYDRATION_AGENT_CAP is left set while a peer agent is dispatched.
+          # The agent cap applies only to the agents in HYDRATION_CAP_AGENTS.
           HYDRATION_CAP_VAL=""
-          if [ "${HYDRATION_AGENT}" = "codex" ] || [ "${HYDRATION_AGENT}" = "claude" ]; then
-            HYDRATION_CAP_VAL="${HYDRATION_AGENT_CAP:-}"
-          fi
+          case ",${HYDRATION_CAP_AGENTS// /}," in
+            *",${HYDRATION_AGENT},"*) HYDRATION_CAP_VAL="${HYDRATION_AGENT_CAP:-}" ;;
+          esac
 
           hydration_args=(
             --agent "${HYDRATION_AGENT}"

@@ -150,15 +150,17 @@ class DiscoveryJob:
                 - dt.timedelta(minutes=self.settings.discovery_overlap_minutes),
             )
 
-        stride = self.settings.day_stride(agent.key)
-        if stride > 1:
-            window_start, day_end = sampled_day_window(
-                self.settings.discovery_start_utc, prior_cursor, window_start, stride
+        sample = self.settings.sample_window(agent.key)
+        if sample is not None:
+            length, every = sample
+            window_start, sample_end = sampled_window(
+                self.settings.discovery_start_utc, prior_cursor, window_start, length, every
             )
-            now = min(now, day_end)
+            now = min(now, sample_end)
             print(
-                f"[discovery] agent={agent.key} sampled day {_fmt(window_start)} -> {_fmt(now)} "
-                f"(every {stride} days from {_fmt(self.settings.discovery_start_utc)})"
+                f"[discovery] agent={agent.key} sample window {_fmt(window_start)} -> {_fmt(now)} "
+                f"({_hours(length)}h in every {_hours(every)}h "
+                f"from {_fmt(self.settings.discovery_start_utc)})"
             )
 
         if self.settings.discovery_max_window_hours > 0:
@@ -410,25 +412,30 @@ class DiscoveryJob:
         return int(payload.get("total_count", 0))
 
 
-def sampled_day_window(
+def sampled_window(
     origin: dt.datetime,
     prior_cursor: dt.datetime | None,
     window_start: dt.datetime,
-    stride: int,
+    length: dt.timedelta,
+    every: dt.timedelta,
 ) -> tuple[dt.datetime, dt.datetime]:
-    """Return (start, end) of the discovery window inside one sampled day.
+    """Return (start, end) of the discovery window inside one sample window.
 
-    The sampled days are origin + k * stride days (k = 0, 1, 2, ...). If the
-    cursor is inside a sampled day, the window continues that day from
-    window_start. Otherwise the window is the next sampled day.
+    The sample windows start at origin + k * every (k = 0, 1, 2, ...) and are
+    `length` long. If the cursor is inside a sample window, the discovery
+    window continues it from window_start. Otherwise it is the next sample
+    window.
     """
-    day = dt.timedelta(days=1)
     position = max(prior_cursor if prior_cursor is not None else origin, origin)
-    sampled = origin + ((position - origin) // day // stride) * stride * day
-    if position >= sampled + day:
-        sampled += stride * day
-        return sampled, sampled + day
-    return max(window_start, sampled), sampled + day
+    sampled = origin + ((position - origin) // every) * every
+    if position >= sampled + length:
+        sampled += every
+        return sampled, sampled + length
+    return max(window_start, sampled), sampled + length
+
+
+def _hours(delta: dt.timedelta) -> int:
+    return int(delta.total_seconds() // 3600)
 
 
 def _select_agents(include_agents: Iterable[str] | None) -> list[AgentDefinition]:

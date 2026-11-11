@@ -88,7 +88,9 @@ Useful repository variables:
 - `GHAPI_START_DATE` (ISO-8601 UTC, used when an agent has no discovery cursor)
 - `GHAPI_DISCOVERY_END_DATE` (ISO-8601 UTC, discovery never stores PRs created after it)
 - `GHAPI_DISCOVERY_MAX_PENDING` (default `15000`; see "Limit the discovery backlog")
-- `GHAPI_DISCOVERY_DAY_STRIDES` (for example `codex=6,claude_head=8`; see "Sample days for a large agent")
+- `GHAPI_DISCOVERY_SAMPLES` (for example `codex=6,claude_head=4h/124h`. See "Sample windows for a large agent". The old name `GHAPI_DISCOVERY_DAY_STRIDES` takes days only. The workflow uses it when the new variable is not set.)
+- `GHAPI_HYDRATION_AGENT_CAP` (the maximum number of hydrated PRs for each capped agent. Pruned PRs count.)
+- `GHAPI_HYDRATION_CAP_AGENTS` (default `codex,claude,cursor`: the stored agent keys that the cap applies to)
 - `GHAPI_HYDRATION_LIMIT` (default fallback: `900`; adaptive planner may increase/decrease for Codex unless dispatch overrides are set)
 - `GHAPI_METRICS_LIMIT` (default fallback: `900`)
 - `GHAPI_CODEX_HYDRATION_SHARDS` (default fallback: `6`, max supported by workflow matrix: `12`)
@@ -243,12 +245,24 @@ The job then exits with success. The PR in progress stays unhydrated, with no er
 next run claims it again. The discovery cursor stays at the last finished shard. Outside the
 workflow, `GHAPI_STOP_AT` is not set, and nothing changes.
 
-### Sample days for a large agent
+### Sample windows for a large agent
 
-Set `DISCOVERY_DAY_STRIDES` (workflow variable `GHAPI_DISCOVERY_DAY_STRIDES`), for example
-`codex=6,claude_head=8`. Discovery for a listed agent then covers only every Nth UTC day,
-counted from the start date: day 0, day N, day 2N, and so on. Agents that are not listed cover
-every day. Use it with the agent cap to spread a capped agent's sample across the whole window.
+Set `DISCOVERY_SAMPLES` (workflow variable `GHAPI_DISCOVERY_SAMPLES`). Each entry is
+`agent=value`, separated by commas. The value has one of two forms:
+
+- `N`: one full UTC day in every N days, counted from the start date (day 0, day N, day 2N,
+  and so on). For example, `codex=6`.
+- `Lh/Eh`: a window of L hours at the start of every E hours, counted from the start date. For
+  example, `claude_head=4h/124h` gives 4 hours in every 124 hours. Because 124 hours is 5 days
+  and 4 hours, each window starts 4 hours later in the day than the window before it. Six
+  windows then cover each hour of the day one time.
+
+Agents that are not listed cover the full period. Use the windows with the agent cap
+(`GHAPI_HYDRATION_AGENT_CAP` and `GHAPI_HYDRATION_CAP_AGENTS`). The windows spread the sample
+of a capped agent across the full period, and the cap limits its size.
+
+When you change the windows during a crawl, PRs outside the new windows can stay in the
+database from the old windows. The agent cap counts them.
 
 ## Supabase vacuum note
 

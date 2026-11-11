@@ -34,21 +34,40 @@ def _parse_optional_utc_timestamp(value: str | None) -> dt.datetime | None:
     return _parse_utc_timestamp(value)
 
 
-def _parse_day_strides(value: str | None) -> tuple[tuple[str, int], ...]:
-    """Parse "codex=6,claude_head=8" into (("codex", 6), ("claude_head", 8))."""
-    pairs: list[tuple[str, int]] = []
+def _parse_discovery_samples(value: str | None) -> tuple[tuple[str, int, int], ...]:
+    """Parse the per-agent sample windows into (agent, length_hours, every_hours).
+
+    "codex=6" means one full UTC day in every 6 days: ("codex", 24, 144).
+    "claude_head=4h/124h" means a 4-hour window in every 124 hours: ("claude_head", 4, 124).
+    """
+    samples: list[tuple[str, int, int]] = []
     for part in (value or "").split(","):
         part = part.strip()
         if not part:
             continue
         key, sep, raw = part.partition("=")
+        raw = raw.strip()
         if not sep or not key.strip():
-            raise ValueError(f"DISCOVERY_DAY_STRIDES: expected agent=days, got {part!r}")
-        stride = int(raw)
-        if stride < 1:
-            raise ValueError(f"DISCOVERY_DAY_STRIDES: days must be 1 or more, got {part!r}")
-        pairs.append((key.strip(), stride))
-    return tuple(pairs)
+            raise ValueError(f"DISCOVERY_SAMPLES: expected agent=days or agent=Lh/Eh, got {part!r}")
+        length_raw, slash, every_raw = raw.partition("/")
+        try:
+            if slash:
+                if not (length_raw.endswith("h") and every_raw.endswith("h")):
+                    raise ValueError
+                length, every = int(length_raw[:-1]), int(every_raw[:-1])
+            else:
+                length, every = 24, 24 * int(raw)
+        except ValueError:
+            raise ValueError(
+                f"DISCOVERY_SAMPLES: expected agent=days or agent=Lh/Eh, got {part!r}"
+            ) from None
+        if length < 1 or every < length:
+            raise ValueError(
+                f"DISCOVERY_SAMPLES: the window must be 1 hour or more and not longer "
+                f"than the step, got {part!r}"
+            )
+        samples.append((key.strip(), length, every))
+    return tuple(samples)
 
 
 def _parse_patterns(value: str | None) -> tuple[str, ...]:
@@ -172,13 +191,17 @@ class Settings:
     # Discovery skips an agent while it has at least this many unhydrated PRs
     # (0 = no limit). This keeps the free-tier database small.
     discovery_max_pending: int = 0
-    # Per agent: discover only every Nth UTC day, counted from
-    # discovery_start_utc (day 0, day N, day 2N, ...). Agents not listed
-    # discover every day.
-    discovery_day_strides: tuple[tuple[str, int], ...] = ()
+    # Per agent: (agent, length_hours, every_hours). Discovery covers only a
+    # window of length_hours at the start of each step of every_hours, counted
+    # from discovery_start_utc. Agents not listed discover the full period.
+    discovery_samples: tuple[tuple[str, int, int], ...] = ()
 
-    def day_stride(self, agent_key: str) -> int:
-        return dict(self.discovery_day_strides).get(agent_key, 1)
+    def sample_window(self, agent_key: str) -> tuple[dt.timedelta, dt.timedelta] | None:
+        """Return (length, every) for a sampled agent, or None for the full period."""
+        for key, length, every in self.discovery_samples:
+            if key == agent_key and every > length:
+                return dt.timedelta(hours=length), dt.timedelta(hours=every)
+        return None
 
 
 def load_settings() -> Settings:
@@ -213,7 +236,10 @@ def load_settings() -> Settings:
             int(_env_with_default("DISCOVERY_MAX_WINDOW_HOURS", "4")), 0
         ),
         discovery_max_pending=max(int(_env_with_default("DISCOVERY_MAX_PENDING", "0")), 0),
-        discovery_day_strides=_parse_day_strides(os.getenv("DISCOVERY_DAY_STRIDES")),
+        # DISCOVERY_DAY_STRIDES is the old name. It takes days only.
+        discovery_samples=_parse_discovery_samples(
+            os.getenv("DISCOVERY_SAMPLES") or os.getenv("DISCOVERY_DAY_STRIDES")
+        ),
         max_shard_depth=max(int(_env_with_default("MAX_SHARD_DEPTH", "20")), 1),
         repo_allowlist_patterns=_parse_patterns(
             os.getenv("REPO_ALLOWLIST") or _read_allowlist_file("REPO_ALLOWLIST_FILE")
